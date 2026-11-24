@@ -16,9 +16,9 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
   `disassemble` by address) with a cleared environment, a deadline, an output cap and cancellation.
 - TUI shell done (#6): `bonito [--kuna PATH] <binary>` shows the function list, a code pane and a status area;
   `q` / `ZZ` / `:q` quit. Vim keymap done (#7): counts, prefixes, marks, `:` `/` `?` prompts with history.
-- Core views (#8, branch `feat/8-core-views`, no PR yet): tasks 1–3 done and In Review (#49 worker, #50 `Pane`
-  cursor, #51 views): move in the list, Enter / `gd` / `ga` open the decompile or disassembly of a function in the
-  code pane (cursor, scrolling, `Ctrl-w` focus). Still to do: #52 follow call, `:e`, jumplist, marks; #53 searches.
+- Core views (#8, branch `feat/8-core-views`, no PR yet): tasks done and In Review: #49 worker, #50 `Pane` cursor,
+  #51 views, #54 worker moved to `src/worker.rs`, #52 follow call (Enter), `:e NAME|0xADDR`, jumplist (`Ctrl-o` /
+  `Ctrl-i`, `src/jumps.rs`) and marks. Still to do: #53 searches (`/ ? n N * #`).
 - Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #35 (pin Actions by SHA); #42
   (private cwd, process-group kill, signals).
 
@@ -56,16 +56,16 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | #3 | rename → bonito (done) |
 | #4 | record the v1 design (done) |
 | #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` (done) |
-| #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**; tasks #49–#51 done, #52 #53 to do) |
+| #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**; tasks #49–#52 and #54 done, #53 to do) |
 | #9 | xrefs, strings, crypto, blobs, hex, p-code, summary · #10 options (`catalog`, `:set`, `:mode`) |
 | #11 | whole-binary cache (`decompile-project --stream`) · #12 call graph · #13 unpack + FID |
 | #14 | REA engine (static-only allow-list) · #15 visual mode + OSC 52 yank |
 | #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
 
 ## Open work / next steps
-1. #8 core views = MVP (first release candidate), on `feat/8-core-views`: do #52 (first commit: move the worker
-   half of `src/app.rs` into `src/worker.rs`; follow call, `:e NAME|0xADDR`, jumplist, marks) and #53 (`/ ? n N * #`),
-   then open the PR (`Closes #8, #49 … #53`). Then #42, #35, #9, #10, #12. `v0.1.0` only on the user's `release`.
+1. #8 core views = MVP (first release candidate), on `feat/8-core-views`: do #53 (`/ ? n N * #` in both panes; drop
+   the `keymap.rs` and `view.rs` dead-code allows), then open the PR (`Closes #8, #49 … #54`). Then #42, #35, #9, #10,
+   #12. `v0.1.0` only on the user's `release`.
 2. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
 3. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
 4. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
