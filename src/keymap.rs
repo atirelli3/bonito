@@ -48,7 +48,7 @@ pub enum Pane {
 }
 
 /// The views a `g` key opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum View {
     Decompile,
     Disassembly,

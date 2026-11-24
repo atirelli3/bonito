@@ -1,11 +1,14 @@
 //! The application state, its workers and the event loop.
 
-use crate::keymap::{Action, Keymap, View};
+use crate::keymap::{self, Action, Keymap, View};
 use crate::kuna::{self, Decompiled, Disassembly, Function, Kuna, Reply};
 use crate::ui;
+use crate::view::Pane;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+use ratatui::layout::Rect;
+use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::iter::once;
@@ -23,6 +26,8 @@ const TAB: &str = "    ";
 const MAX_LINES: usize = 100_000;
 /// How many characters of a line a view keeps.
 const MAX_LINE_CHARS: usize = 4096;
+/// How many loaded views are kept: each can hold a hundred thousand lines.
+const MAX_VIEWS: usize = 64;
 /// How many characters of a panic message are kept.
 const PANIC_LIMIT: usize = 200;
 /// How often an idle worker checks whether kuna was cancelled.
@@ -35,8 +40,6 @@ pub enum Msg {
     /// The answer to the functions request.
     Functions(Result<Reply<Vec<Function>>, kuna::Error>),
     /// The answer to a `Request`: the lines of that view of the function at `address`.
-    // ponytail: the views (#51) read it; until then the loop only drops it.
-    #[allow(dead_code)]
     Code {
         view: View,
         address: u64,
@@ -45,12 +48,48 @@ pub enum Msg {
 }
 
 /// A view of the function at `address`, asked of the worker.
-// ponytail: the views (#51) send these; until then only the tests do.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Request {
     pub view: View,
     pub address: u64,
+}
+
+/// Which pane the keys move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    List,
+    Code,
+}
+
+/// The view the code pane shows.
+pub struct Shown {
+    pub request: Request,
+    /// The function's name, for the title.
+    pub name: String,
+}
+
+/// What became of a request for a view.
+pub enum Loaded {
+    /// Asked for, not answered yet.
+    Loading,
+    /// The lines with the cursor the user left in them, and what kuna said while making them.
+    Ready(Pane, Option<String>),
+    /// kuna failed; this says why.
+    Failed(String),
+}
+
+/// How a view is called in a pane title.
+pub fn view_name(view: View) -> &'static str {
+    match view {
+        View::Decompile => "decompile",
+        View::Disassembly => "disassembly",
+        View::Xrefs => "xrefs",
+        View::Strings => "strings",
+        View::CallGraph => "call graph",
+        View::Hex => "hex",
+        View::PCode => "p-code",
+        View::Summary => "summary",
+    }
 }
 
 /// The functions kuna found, as far as they are known.
@@ -79,12 +118,27 @@ pub struct App {
     pub warning: Option<String>,
     /// Turns keys into actions; the screen shows its prompt and pending keys.
     pub keymap: Keymap,
+    /// The pane the keys move.
+    pub focus: Focus,
+    /// The function names, with the selection as its cursor.
+    pub list: Pane,
+    /// The view the code pane shows, if one was opened.
+    pub shown: Option<Shown>,
+    views: HashMap<Request, Loaded>,
+    requests: Sender<Request>,
+    /// The height of the panes' text, as drawn last.
+    rows: usize,
     running: bool,
 }
 
 impl App {
-    /// A new app for `binary`; `warning` is shown for the whole session.
-    pub fn new(binary: PathBuf, kuna_version: String, warning: Option<String>) -> Self {
+    /// A new app for `binary`; `warning` is shown for the whole session, and views are asked for on `requests`.
+    pub fn new(
+        binary: PathBuf,
+        kuna_version: String,
+        warning: Option<String>,
+        requests: Sender<Request>,
+    ) -> Self {
         Self {
             binary,
             kuna_version,
@@ -93,7 +147,55 @@ impl App {
             message: None,
             warning,
             keymap: Keymap::default(),
+            focus: Focus::List,
+            list: Pane::new(Vec::new()),
+            shown: None,
+            views: HashMap::new(),
+            requests,
+            rows: 0,
             running: true,
+        }
+    }
+
+    /// Takes the height of the panes' text; the cursors stay in view.
+    pub fn set_rows(&mut self, rows: usize) {
+        self.rows = rows;
+        self.list.keep_visible(rows);
+        if let Some(pane) = self.code_mut() {
+            pane.keep_visible(rows);
+        }
+    }
+
+    /// The view in the code pane and what became of it.
+    pub fn current(&self) -> Option<(&Shown, &Loaded)> {
+        let shown = self.shown.as_ref()?;
+        Some((shown, self.views.get(&shown.request)?))
+    }
+
+    /// "decompiling main…" while the code pane waits for kuna.
+    pub fn loading(&self) -> Option<String> {
+        let (shown, Loaded::Loading) = self.current()? else {
+            return None;
+        };
+        let verb = match shown.request.view {
+            View::Decompile => "decompiling",
+            View::Disassembly => "disassembling",
+            View::Xrefs
+            | View::Strings
+            | View::CallGraph
+            | View::Hex
+            | View::PCode
+            | View::Summary => "loading",
+        };
+        Some(format!("{verb} {}…", shown.name))
+    }
+
+    /// What kuna said while making the view shown, or why it failed.
+    pub fn view_note(&self) -> Option<&str> {
+        match self.current()?.1 {
+            Loaded::Ready(_, notes) => notes.as_deref(),
+            Loaded::Failed(why) => Some(why),
+            Loaded::Loading => None,
         }
     }
 
@@ -112,6 +214,8 @@ impl App {
             Msg::Input(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => self.on_key(key),
             Msg::Input(Ok(_)) => {}
             Msg::Functions(Ok(reply)) => {
+                let names = reply.data.iter().map(|f| f.name.as_str().to_string());
+                self.list = Pane::new(names.collect());
                 self.functions = Functions::Ready(reply.data);
                 self.status = reply.notes;
             }
@@ -119,13 +223,45 @@ impl App {
                 self.functions = Functions::Failed;
                 self.status = Some(error.to_string());
             }
-            // ponytail: #51 shows the lines; a failure already reaches the status.
             Msg::Code {
-                answer: Err(error), ..
-            } => self.status = Some(error.to_string()),
-            Msg::Code { answer: Ok(_), .. } => {}
+                view,
+                address,
+                answer,
+            } => self.answered(Request { view, address }, answer),
         }
         Ok(())
+    }
+
+    /// Keeps the answer for `request`, unless that view is loaded already.
+    fn answered(&mut self, request: Request, answer: Result<Reply<Vec<String>>, kuna::Error>) {
+        if matches!(self.views.get(&request), Some(Loaded::Ready(..))) {
+            return;
+        }
+        let loaded = match answer {
+            Ok(reply) => Loaded::Ready(Pane::new(reply.data), reply.notes),
+            Err(error) => Loaded::Failed(error.to_string()),
+        };
+        self.views.insert(request, loaded);
+        self.evict();
+    }
+
+    /// Drops loaded views other than the one shown while more than `MAX_VIEWS` are kept.
+    // ponytail: the victims are arbitrary and a dropped view loses its cursor; #11 replaces this with a cache.
+    fn evict(&mut self) {
+        let keep = self.shown.as_ref().map(|shown| shown.request);
+        while self.views.len() > MAX_VIEWS {
+            let victim = self
+                .views
+                .iter()
+                .find(|(request, loaded)| {
+                    Some(**request) != keep && matches!(loaded, Loaded::Ready(..))
+                })
+                .map(|(request, _)| *request);
+            match victim {
+                Some(request) => self.views.remove(&request),
+                None => break,
+            };
+        }
     }
 
     /// Feeds the key to the keymap and applies the action it completes; the last message goes with the key.
@@ -137,24 +273,118 @@ impl App {
     }
 
     /// Does what `action` asks.
-    // ponytail: the views of #8-#15 act on the rest. Until then a search, a view or a follow says it is not
-    // available and the motions are silent; every action is named so a new one cannot be dropped by accident.
+    // ponytail: #52 acts on follow in the code, the jumplist and marks, #53 on searches, #9 on the other views;
+    // until then they say it is not available. Every action is named so a new one cannot be dropped by accident.
     fn apply(&mut self, action: Action) {
         match action {
             Action::Quit => self.running = false,
             Action::Command(line) => self.command(&line),
-            Action::Search { .. } | Action::Open(_) | Action::Follow => {
-                self.message = Some("not available yet".to_string());
+            Action::Move { motion, count } => {
+                self.with_pane(|pane, rows| pane.motion(motion, count, rows));
             }
-            Action::Move { .. }
-            | Action::Scroll(_)
-            | Action::Pane(_)
+            Action::Scroll(to) => self.with_pane(|pane, rows| pane.scroll(to, rows)),
+            Action::Pane(to) => self.focus_pane(to),
+            Action::Open(view) => self.open_view(view),
+            Action::Follow => match self.focus {
+                Focus::List => self.open_view(View::Decompile),
+                Focus::Code => self.not_yet(),
+            },
+            Action::Search { .. }
             | Action::Back
             | Action::Forward
             | Action::SetMark(_)
             | Action::JumpMark { .. }
             | Action::SearchNext { .. }
-            | Action::SearchWord { .. } => {}
+            | Action::SearchWord { .. } => self.not_yet(),
+        }
+    }
+
+    fn not_yet(&mut self) {
+        self.message = Some("not available yet".to_string());
+    }
+
+    /// Lets `change` act on the pane that has the focus, with the height of the panes.
+    fn with_pane(&mut self, change: impl FnOnce(&mut Pane, usize)) {
+        let rows = self.rows;
+        match self.focus {
+            Focus::List => change(&mut self.list, rows),
+            Focus::Code => {
+                if let Some(pane) = self.code_mut() {
+                    change(pane, rows);
+                }
+            }
+        }
+    }
+
+    /// The pane of the view shown, once kuna has answered.
+    fn code_mut(&mut self) -> Option<&mut Pane> {
+        let request = self.shown.as_ref()?.request;
+        match self.views.get_mut(&request) {
+            Some(Loaded::Ready(pane, _)) => Some(pane),
+            _ => None,
+        }
+    }
+
+    /// `Ctrl-w`: the focus moves to the other pane, but the code pane takes it only with something to show.
+    fn focus_pane(&mut self, to: keymap::Pane) {
+        let code = match to {
+            keymap::Pane::Left => false,
+            keymap::Pane::Right => true,
+            keymap::Pane::Next | keymap::Pane::Prev => self.focus == Focus::List,
+        };
+        if code && self.shown.is_none() {
+            self.message = Some("no code open".to_string());
+            return;
+        }
+        self.focus = if code { Focus::Code } else { Focus::List };
+    }
+
+    /// The function under the list's cursor.
+    fn selected(&self) -> Option<&Function> {
+        match &self.functions {
+            Functions::Ready(list) => list.get(self.list.line()),
+            Functions::Loading | Functions::Failed => None,
+        }
+    }
+
+    /// `gd` or `ga`, or Enter in the list: `view` of the selected function, or of the one shown.
+    fn open_view(&mut self, view: View) {
+        if !matches!(view, View::Decompile | View::Disassembly) {
+            return self.not_yet();
+        }
+        let target = match self.focus {
+            Focus::Code => self
+                .shown
+                .as_ref()
+                .map(|shown| (shown.request.address, shown.name.clone())),
+            Focus::List => self
+                .selected()
+                .map(|function| (function.address, function.name.as_str().to_string())),
+        };
+        let nothing = match &self.functions {
+            Functions::Loading => "the functions are still loading",
+            Functions::Failed => "the functions could not be listed",
+            Functions::Ready(_) => "no function selected",
+        };
+        match target {
+            Some((address, name)) => self.open(Request { view, address }, name),
+            None => self.message = Some(nothing.to_string()),
+        }
+    }
+
+    /// Shows `request` in the code pane and gives it the focus; a view not loaded is asked for.
+    // ponytail: a view still loading is asked for again, as the worker drops requests a newer one replaced.
+    fn open(&mut self, request: Request, name: String) {
+        self.shown = Some(Shown { request, name });
+        self.focus = Focus::Code;
+        let rows = self.rows;
+        if let Some(Loaded::Ready(pane, _)) = self.views.get_mut(&request) {
+            return pane.keep_visible(rows);
+        }
+        self.views.insert(request, Loaded::Loading);
+        if self.requests.send(request).is_err() {
+            let why = "the kuna worker has stopped".to_string();
+            self.views.insert(request, Loaded::Failed(why));
         }
     }
 
@@ -178,6 +408,7 @@ where
     B::Error: 'static,
 {
     while app.running() {
+        app.set_rows(ui::text_rows(Rect::from(terminal.size()?)));
         terminal.draw(|frame| ui::render(frame, app))?;
         let msg = rx.recv().map_err(|_| "the event sources stopped")?;
         app.update(msg)?;

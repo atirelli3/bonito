@@ -1,5 +1,5 @@
 //! A cursor over lines of text: vim motions, scrolling and search. No I/O and no terminal: the views draw it.
-// ponytail: the views of #51, #52 and #53 use it; until then only the tests do.
+// ponytail: `find` and `word` wait for the views of #52 and #53; drop this allow when they use them.
 #![allow(dead_code)]
 
 use crate::keymap::{Motion, ScrollTo};
@@ -485,7 +485,7 @@ impl Pane {
     }
 
     /// Moves the window by the least that shows the cursor line.
-    fn keep_visible(&mut self, rows: usize) {
+    pub fn keep_visible(&mut self, rows: usize) {
         let rows = rows.max(1);
         if self.line < self.top {
             self.top = self.line;

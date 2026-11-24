@@ -66,20 +66,16 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     require_file(&binary)?;
     let kuna = Arc::new(kuna::locate(explicit_kuna.as_deref(), &binary)?);
     require_terminal()?;
-    let mut app = App::new(
-        binary.clone(),
-        kuna.version().to_string(),
-        kuna.version_warning(),
-    );
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    let worker = app::spawn_worker(Arc::clone(&kuna), binary, queue, tx.clone())?;
+    let worker = app::spawn_worker(Arc::clone(&kuna), binary.clone(), queue, tx.clone())?;
+    let (version, warning) = (kuna.version().to_string(), kuna.version_warning());
     let _stop = Stop {
         kuna,
         worker: Some(worker),
     };
-    // ponytail: #51 moves this into `App`; the worker ends on `Kuna::cancel` either way.
-    let _requests = requests;
+    // ponytail: the worker ends on `Kuna::cancel`, whatever order these drop in.
+    let mut app = App::new(binary, version, warning, requests);
     interact(&mut app, tx, &rx)
 }
 
