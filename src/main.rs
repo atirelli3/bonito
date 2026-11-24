@@ -5,6 +5,7 @@ mod args;
 mod keymap;
 mod kuna;
 mod ui;
+mod view;
 
 use app::App;
 use args::Command;
