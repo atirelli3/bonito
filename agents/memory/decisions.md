@@ -137,6 +137,12 @@ fact the code doesn't say.
   Windows): the unit tests drive the real kuna on `tests/fixtures/hello.elf` and fail, never skip, when it is missing.
 - [WHY] A macOS job can wait for a runner for ~15 minutes and end `cancelled` with no steps run: that is the runner,
   not the change. `gh run rerun <run-id> --failed` runs only that job; never merge before all 3 checks pass.
+- [WHY] Every third-party action is pinned by full commit SHA with its version in a comment (a tag can be moved), and
+  every checkout has `persist-credentials: false`. `dtolnay/rust-toolchain` takes the toolchain from its *ref name*,
+  so a SHA pin needs an explicit `toolchain: stable` or it installs nothing useful. Dependabot (Actions, weekly,
+  `ci:` prefix) bumps the SHA and the comment together; its PRs have no issue, the one exception to the workflow, and
+  still need all 3 checks. A workflow edit is checked with `actionlint` (`brew install actionlint`) plus the PR's own
+  run; `release.yml` only runs on a tag, so its edits are untested until the first release.
 - [WHY] The UI needs a terminal and `main` refuses a non-terminal, so no test can start it (crossterm would fall back
   to `/dev/tty`). `tests/smoke.rs` covers every path that ends before `try_init`; the screen itself is covered by
   `TestBackend` tests, and a change to the live path is also run by hand on a pty (strip CSI before matching: ratatui

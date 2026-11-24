@@ -16,22 +16,24 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
   `disassemble` by address) with a cleared environment, a deadline, an output cap and cancellation.
 - TUI shell done (#6): `bonito [--kuna PATH] <binary>` shows the function list, a code pane and a status area;
   `q` / `ZZ` / `:q` quit. Vim keymap done (#7): counts, prefixes, marks, `:` `/` `?` prompts with history.
-- Core views (#8, branch `feat/8-core-views`, no PR yet): tasks done and In Review: #49 worker, #50 `Pane` cursor,
-  #51 views, #54 worker moved to `src/worker.rs`, #52 follow call (Enter), `:e NAME|0xADDR`, jumplist (`Ctrl-o` /
-  `Ctrl-i`, `src/jumps.rs`) and marks. Still to do: #53 searches (`/ ? n N * #`).
-- Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #35 (pin Actions by SHA); #42
-  (private cwd, process-group kill, signals).
+- Core views done (#8, PR #55): worker, `Pane` cursor, decompile / disassembly views, follow call (Enter), `:e
+  NAME|0xADDR`, jumplist (`Ctrl-o` / `Ctrl-i`, `src/jumps.rs`), marks, and `/ ? n N * #` search in both panes. This
+  is the MVP (first release candidate); `v0.1.0` is not tagged.
+- kuna hardening done (#42, PR #60): kuna runs in a private 0700 per-session directory (`src/kuna/scratch.rs`) and, on
+  Unix, in its own session (`detach`, the repo's only `unsafe`). CI pinned by SHA with Dependabot (#35, PR #61).
+- Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #59 (kill kuna's process group,
+  Windows console, SIGHUP / SIGTERM handling: needs a user decision on how to handle signals).
 
 ## Layout
 | Path | What |
 |---|---|
-| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `jumps.rs` the pure jumplist; `kuna.rs` (+ `kuna/json.rs`, `text.rs`, `tests.rs`) the kuna driver |
+| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `jumps.rs` the pure jumplist; `kuna.rs` (+ `kuna/json.rs`, `scratch.rs`, `text.rs`, `tests.rs`) the kuna driver |
 | `tests/` | `smoke.rs` drives the built binary through every path that ends before the terminal is taken over; `fixtures/` = `hello.elf` (+ `hello.c`) and recorded kuna JSON |
 | `kuna-version` | the tested kuna version (line 1) + a sha256 per platform |
 | `scripts/gate.sh` | push gate = CI `gate` job: fetches kuna, then fmt, clippy, tests + coverage ≥ 80% |
 | `scripts/kuna.sh` | fetch the pinned kuna into `target/kuna/`, verified against `kuna-version` |
 | `scripts/task.sh` | board: list open issues / set one issue's status (~6 GraphQL calls: pace it) |
-| `.github/workflows/` | `ci.yml` (PRs + `main`), `release.yml` (`v*.*.*` tags) |
+| `.github/` | `workflows/ci.yml` (PRs + `main`), `workflows/release.yml` (`v*.*.*` tags), `dependabot.yml` (Actions, weekly) |
 | `.claude/` | settings (`opusplan`), Haiku agents `search` / `tests` / `docs`, the `tests` hook |
 | `.mcp.json` | the rust-anything MCP server |
 | `agents/` | this file, `memory/` (the why), `handoff/`, `audits/`, `reviews/` |
@@ -56,16 +58,16 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | #3 | rename → bonito (done) |
 | #4 | record the v1 design (done) |
 | #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` (done) |
-| #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**; tasks #49–#52 and #54 done, #53 to do) |
+| #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**, done) |
 | #9 | xrefs, strings, crypto, blobs, hex, p-code, summary · #10 options (`catalog`, `:set`, `:mode`) |
 | #11 | whole-binary cache (`decompile-project --stream`) · #12 call graph · #13 unpack + FID |
 | #14 | REA engine (static-only allow-list) · #15 visual mode + OSC 52 yank |
 | #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
 
 ## Open work / next steps
-1. #8 core views = MVP (first release candidate), on `feat/8-core-views`: do #53 (`/ ? n N * #` in both panes; drop
-   the `keymap.rs` and `view.rs` dead-code allows), then open the PR (`Closes #8, #49 … #54`). Then #42, #35, #9, #10,
-   #12. `v0.1.0` only on the user's `release`.
-2. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
-3. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
-4. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
+1. #59: ask the user how bonito should handle SIGHUP / SIGTERM (kuna no longer gets the terminal's SIGHUP since #57):
+   a hand-declared `sigaction` (more `unsafe`) or the `signal-hook` crate. Then kill kuna's process group.
+2. #9 data and navigation views (plan mode first), then #10, #12, #11. `v0.1.0` only on the user's `release`.
+3. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
+4. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
+5. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
