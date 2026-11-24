@@ -40,15 +40,31 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
   kills kuna on the deadline, the cap or `Kuna::cancel` (a sticky flag: the app calls it on quit, then joins its
   workers, so no kuna outlives bonito). A stopped call's reader threads are not joined (the pipes may stay open).
   A failed kill, a read error, a reader panic or a failed `try_wait` is an error, never a truncated answer.
-  Limit: only the direct child is killed (process group / job object in #42).
-- [WHY] kuna runs with `env_clear()` plus an allowlist (`PATH HOME SYSTEMROOT TEMP TMP TMPDIR LANG LOCALAPPDATA`, four
-  `XDG_*_HOME` names, `LC_*`, `KUNA_*`) and in the temp directory (the root when `$TMPDIR` is relative), so bonito's
-  tokens and cloud keys never reach a process that parses a hostile binary. Relative and empty `PATH` entries are
-  dropped: a helper kuna spawns by name must not find a planted file in its cwd. `XDG_RUNTIME_DIR` stays out (agent
-  and keyring sockets). This is not a sandbox: `HOME` and the filesystem stay reachable. Known limits, tracked in
-  #42: the temp directory is shared (a private 0700 one, with its own `TMPDIR`, would be tighter), kuna can still
-  open `/dev/tty` and write to the terminal, and the Windows allowlist (`USERPROFILE`, `WINDIR`, `SYSTEMDRIVE`,
-  `PATHEXT`) is unverified because CI never runs kuna under it.
+  Limit: only the direct child is killed (process group / job object: #59).
+- [WHY] kuna runs with `env_clear()` plus an allowlist (`PATH HOME SYSTEMROOT LANG LOCALAPPDATA`, four `XDG_*_HOME`
+  names, `LC_*`, `KUNA_*`), so bonito's tokens and cloud keys never reach a process that parses a hostile binary.
+  Relative and empty `PATH` entries are dropped: a helper kuna spawns by name must not find a planted file in its cwd.
+  `XDG_RUNTIME_DIR` stays out (agent and keyring sockets). This is not a sandbox: `HOME` and the filesystem stay
+  reachable. The Windows allowlist is proven by CI: the real-kuna tests in `src/kuna/tests.rs` run ungated on the
+  Windows job, so `USERPROFILE` `WINDIR` `SYSTEMDRIVE` `PATHEXT` are not needed.
+- [WHY] kuna's cwd and its `TMPDIR` / `TMP` / `TEMP` are one private directory per session (`src/kuna/scratch.rs`):
+  `bonito-<pid>-<nanos>-<n>` under the temp directory, made with mode 0700 and never reused (an existing path,
+  planted or not, is skipped), owned by `Kuna` and removed when it drops, so `--version` already runs in it. The temp
+  variables bonito inherited are not passed on; a relative `$TMPDIR` is `Error::Scratch`, not a fallback, and so is a
+  directory that vanishes mid-session (a temp reaper), which would otherwise read as "kuna not found". Mode 0700 is
+  Unix only: on Windows the directory takes the temp directory's ACL, so it is private only while `%TEMP%` is
+  per-user (the default). A directory that cannot be removed on drop is named on stderr (bonito has given the
+  terminal back by then); a crash, SIGKILL or SIGTERM of bonito leaves it behind (#59).
+- [USER-YES] (2026-11-24) On Unix kuna starts in a session of its own (`detach` in `src/kuna.rs`), so it has no
+  controlling terminal: `/dev/tty` fails (ENXIO) and `TIOCSTI` keystroke injection into bonito's input is closed.
+  kuna (same user) can still write to the terminal's device file by path, so this is not a sandbox. std's
+  `CommandExt::setsid` is still nightly (rust-lang/rust#105376), so this is the repo's only `unsafe`: a `pre_exec`
+  closure that calls a hand-declared `safe fn setsid()` (no `libc` crate). It costs the posix_spawn fast path, which
+  does not matter at one spawn per request. kuna also leads its own process group now, which #59 will use to kill
+  its helpers. Side effect: kuna no longer gets the terminal's SIGHUP, so if the terminal closes it runs on until
+  its own deadline (#59, with the unhandled SIGTERM / SIGHUP of bonito itself). Not done on Windows: a console
+  child inherits bonito's console and can open `CONOUT$`; `creation_flags(DETACHED_PROCESS)` is the fix (#59). The
+  tests prove the process group everywhere on Unix and the session id on Linux (`ps -o sid` is not portable to macOS).
 
 - [WHY] `locate(explicit, analysed)` refuses (`Error::BinaryIsKuna`) when the kuna to run is the file to analyse,
   comparing canonical paths, **before** the `--version` probe: the probe runs the file, so `bonito --kuna X X` would

@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io, thread};
 
 mod json;
+mod scratch;
 mod text;
+
+use scratch::Scratch;
 
 pub use json::{Decompiled, Disassembly, Function};
 pub use text::{is_unsafe, single_line};
@@ -41,13 +44,10 @@ const PROBE_LIMIT: usize = 4096;
 /// How often a running call checks its deadline and its stop flag.
 const POLL: Duration = Duration::from_millis(10);
 /// The environment variables kuna is started with, compared ASCII-uppercase (Windows names are case-blind).
-const ENV_NAMES: [&str; 12] = [
+const ENV_NAMES: [&str; 9] = [
     "PATH",
     "HOME",
     "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
     "LANG",
     "LOCALAPPDATA",
     "XDG_CACHE_HOME",
@@ -80,6 +80,8 @@ pub enum Error {
     },
     /// The binary exists but could not be started.
     Spawn { path: PathBuf, source: io::Error },
+    /// The private directory kuna runs in could not be made.
+    Scratch { dir: PathBuf, source: io::Error },
     /// The kuna to run is the file to analyse, which bonito never runs.
     BinaryIsKuna(PathBuf),
     /// kuna ran and exited with an error; `stderr` is what it said, made safe to print.
@@ -117,6 +119,12 @@ impl fmt::Display for Error {
                 reason,
             } => write!(f, "{origin} {path:?}: {reason}"),
             Self::Spawn { path, source } => write!(f, "cannot start {path:?}: {source}"),
+            Self::Scratch { dir, source } => {
+                write!(
+                    f,
+                    "cannot make a private directory for kuna in {dir:?}: {source}"
+                )
+            }
             Self::BinaryIsKuna(path) => write!(
                 f,
                 "{path:?} is both the kuna to run and the file to analyse: bonito never runs the analysed file"
@@ -162,7 +170,10 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Spawn { source, .. } | Self::Control(source) | Self::Read(source) => Some(source),
+            Self::Spawn { source, .. }
+            | Self::Scratch { source, .. }
+            | Self::Control(source)
+            | Self::Read(source) => Some(source),
             Self::BadOutput(source) => Some(source),
             Self::Parse(source) => Some(source),
             Self::NotOnPath
@@ -185,6 +196,8 @@ pub struct Kuna {
     version: String,
     /// Set by `cancel`: every call in flight kills its kuna and returns `Error::Cancelled`.
     stop: AtomicBool,
+    /// The directory every call runs in; it goes when this does.
+    scratch: Scratch,
 }
 
 /// A parsed kuna answer, with what kuna said on stderr while still succeeding (loader repairs, fallbacks).
@@ -238,15 +251,17 @@ impl Kuna {
     /// Runs `kuna --version` on `path`.
     fn probe(path: PathBuf) -> Result<Self, Error> {
         let stop = AtomicBool::new(false);
+        let scratch = Scratch::new()?;
         let limits = Limits {
             stdout: PROBE_LIMIT,
-            ..Limits::new(&stop)
+            ..Limits::new(&stop, scratch.path())
         };
         let version = parse_version(&run(&path, ["--version"], &limits)?.stdout)?;
         Ok(Self {
             path,
             version,
             stop,
+            scratch,
         })
     }
 
@@ -297,7 +312,8 @@ impl Kuna {
         extra: &[&str],
     ) -> Result<Reply<T>, Error> {
         let args = query_args(subcommand, binary, extra)?;
-        let output = run(&self.path, args, &Limits::new(&self.stop))?;
+        let limits = Limits::new(&self.stop, self.scratch.path());
+        let output = run(&self.path, args, &limits)?;
         Ok(Reply {
             data: parse(&output.stdout)?,
             notes: output.notes,
@@ -428,19 +444,22 @@ fn parse_version(output: &str) -> Result<String, Error> {
     }
 }
 
-/// What bounds a kuna call: a deadline, a stdout cap and the flag that cancels it.
+/// What bounds a kuna call: a deadline, a stdout cap, the flag that cancels it and the directory it runs in.
 struct Limits<'a> {
     timeout: Duration,
     stdout: usize,
     stop: &'a AtomicBool,
+    /// The working directory, also kuna's `TMPDIR`.
+    dir: &'a Path,
 }
 
 impl<'a> Limits<'a> {
-    fn new(stop: &'a AtomicBool) -> Self {
+    fn new(stop: &'a AtomicBool, dir: &'a Path) -> Self {
         Self {
             timeout: KUNA_TIMEOUT,
             stdout: STDOUT_LIMIT,
             stop,
+            dir,
         }
     }
 }
@@ -454,19 +473,31 @@ where
     if limits.stop.load(Ordering::Relaxed) {
         return Err(Error::Cancelled);
     }
-    let mut child = Command::new(kuna)
+    let mut command = Command::new(kuna);
+    command
         .args(args)
         .env_clear()
         .envs(kuna_env(env::vars_os()))
-        .current_dir(neutral_dir(env::temp_dir()))
+        .env("TMPDIR", limits.dir)
+        .env("TMP", limits.dir)
+        .env("TEMP", limits.dir)
+        .current_dir(limits.dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| Error::Spawn {
-            path: kuna.to_path_buf(),
-            source,
-        })?;
+        .stderr(Stdio::piped());
+    detach(&mut command);
+    let mut child = command.spawn().map_err(|source| {
+        match source.kind() == io::ErrorKind::NotFound && !limits.dir.is_dir() {
+            true => Error::Scratch {
+                dir: limits.dir.to_path_buf(),
+                source,
+            },
+            false => Error::Spawn {
+                path: kuna.to_path_buf(),
+                source,
+            },
+        }
+    })?;
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(stop_child(&mut child, control("no output pipe")));
     };
@@ -507,6 +538,26 @@ where
     let stdout = String::from_utf8(stdout).map_err(Error::BadOutput)?;
     Ok(Output { stdout, notes })
 }
+
+/// Starts `command` in a session of its own, with no controlling terminal.
+#[cfg(unix)]
+fn detach(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe extern "C" {
+        safe fn setsid() -> i32;
+    }
+    // SAFETY: the closure only calls `setsid`, which is async-signal-safe, so it may run between fork and exec.
+    unsafe {
+        command.pre_exec(|| match setsid() {
+            -1 => Err(io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+}
+
+// ponytail: not done on Windows, where a console child can open CONOUT$; DETACHED_PROCESS is the fix (#59).
+#[cfg(not(unix))]
+fn detach(_: &mut Command) {}
 
 /// Waits until `child` has exited and `readers_done`, stopping it at the deadline, when `limits.stop` is set or
 /// once its stdout is over the cap.
@@ -596,14 +647,6 @@ fn kuna_env(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsStri
 fn absolute_entries(search_path: &OsStr) -> OsString {
     let kept = env::split_paths(search_path).filter(|dir| dir.is_absolute());
     env::join_paths(kept).unwrap_or_default()
-}
-
-/// Where to run kuna: the temp directory, or the filesystem root when that is a relative path.
-fn neutral_dir(temp: PathBuf) -> PathBuf {
-    match temp.is_absolute() {
-        true => temp,
-        false => PathBuf::from(path::MAIN_SEPARATOR_STR),
-    }
 }
 
 /// Whether kuna may see the variable `name`.

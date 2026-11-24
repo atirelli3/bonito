@@ -56,7 +56,7 @@ fact the code doesn't say.
   hook restores the terminal, and a worker's panic (caught and shown as an error in the status line) must not do that
   while the loop is still drawing.
 - [WHY] SIGTERM / SIGHUP are not handled yet (the terminal stays raw, kuna is orphaned until its deadline) and only
-  kuna's direct child is killed: both are tracked in #42. `require_file` is a UX pre-check, not a guard: the path is
+  kuna's direct child is killed: both are tracked in #59. `require_file` is a UX pre-check, not a guard: the path is
   opened later by kuna and a symlink can be swapped in between; kuna only ever reads it.
 
 ## Keymap (`src/keymap.rs`)

@@ -149,11 +149,13 @@ fn warns_only_when_the_version_differs_from_the_pinned_one() {
         path: PathBuf::from("kuna"),
         version: pinned_version().to_string(),
         stop: AtomicBool::new(false),
+        scratch: Scratch::new().expect("creates"),
     };
     let other = Kuna {
         path: PathBuf::from("kuna"),
         version: "0.0.1".to_string(),
         stop: AtomicBool::new(false),
+        scratch: Scratch::new().expect("creates"),
     };
     assert_eq!(same.version_warning(), None);
     assert!(other.version_warning().expect("warns").contains("0.0.1"));
@@ -515,8 +517,6 @@ fn kuna_env_keeps_only_the_allowlist() {
             "Path",
             "HOME",
             "SystemRoot",
-            "Temp",
-            "TMPDIR",
             "LocalAppData",
             "LC_ALL",
             "XDG_CACHE_HOME",
@@ -533,14 +533,60 @@ fn kuna_gets_a_path_without_relative_entries() {
 }
 
 #[test]
-fn a_relative_temp_directory_is_not_a_working_directory() {
-    let relative = PathBuf::from("tmp");
-    assert_eq!(
-        neutral_dir(relative),
-        PathBuf::from(path::MAIN_SEPARATOR_STR)
+fn a_scratch_directory_is_private_empty_and_never_shared() {
+    let a = Scratch::new().expect("creates");
+    let b = Scratch::new().expect("creates");
+    assert_ne!(a.path(), b.path());
+    assert!(a.path().is_absolute());
+    assert_eq!(fs::read_dir(a.path()).expect("lists").count(), 0);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(a.path()).expect("exists").permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+}
+
+#[test]
+fn a_scratch_directory_is_removed_with_its_owner() {
+    let scratch = Scratch::new().expect("creates");
+    let path = scratch.path().to_path_buf();
+    fs::write(path.join("left-by-kuna"), "x").expect("writes");
+    drop(scratch);
+    assert!(!path.exists());
+}
+
+#[test]
+fn a_scratch_directory_needs_an_absolute_temp_directory_that_exists() {
+    let relative = Scratch::in_dir(Path::new("tmp"));
+    assert!(
+        matches!(relative, Err(Error::Scratch { .. })),
+        "{relative:?}"
     );
-    let absolute = env::temp_dir();
-    assert_eq!(neutral_dir(absolute.clone()), absolute);
+    let missing = Scratch::in_dir(&env::temp_dir().join("bonito-no-such-dir"));
+    assert!(matches!(missing, Err(Error::Scratch { .. })), "{missing:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_scratch_directory_that_vanished_is_not_reported_as_a_missing_kuna() {
+    let gone = env::temp_dir().join("bonito-vanished");
+    let stop = AtomicBool::new(false);
+    let result = run(
+        Path::new("/bin/sh"),
+        ["-c", "true"],
+        &Limits::new(&stop, &gone),
+    );
+    assert!(matches!(result, Err(Error::Scratch { .. })), "{result:?}");
+}
+
+#[test]
+fn a_kuna_owns_a_scratch_directory_that_goes_with_it() {
+    let kuna = real_kuna();
+    let path = kuna.scratch.path().to_path_buf();
+    assert!(path.is_dir());
+    drop(kuna);
+    assert!(!path.exists());
 }
 
 #[cfg(unix)]
@@ -558,10 +604,52 @@ fn kuna_does_not_inherit_the_environment_of_bonito() {
 
 #[cfg(unix)]
 #[test]
-fn kuna_runs_in_the_temp_directory_not_in_the_working_directory() {
-    let output = run_plain(Path::new("/bin/sh"), ["-c", "pwd -P"]).expect("runs");
-    let expected = env::temp_dir().canonicalize().expect("temp dir");
-    assert_eq!(Path::new(output.stdout.trim()), expected);
+fn kuna_runs_in_the_scratch_directory_and_gets_it_as_its_temp_directory() {
+    let scratch = Scratch::new().expect("creates");
+    let stop = AtomicBool::new(false);
+    let limits = Limits::new(&stop, scratch.path());
+    let script = "printf '%s\\n' \"$(pwd -P)\" \"$TMPDIR\" \"$TMP\" \"$TEMP\"; ls -A | wc -l";
+    let output = run(Path::new("/bin/sh"), ["-c", script], &limits).expect("runs");
+    let lines: Vec<&str> = output.stdout.lines().map(str::trim).collect();
+    let here = scratch.path().canonicalize().expect("exists");
+    let given = scratch.path().to_string_lossy();
+    assert_eq!(
+        lines,
+        [
+            here.to_string_lossy(),
+            given.clone(),
+            given.clone(),
+            given,
+            "0".into()
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn kuna_leads_its_own_process_group() {
+    let script = "echo $$; ps -o pgid= -p $$";
+    let output = run_plain(Path::new("/bin/sh"), ["-c", script]).expect("runs");
+    let mut words = output.stdout.split_whitespace();
+    let (pid, group) = (words.next(), words.next());
+    assert!(pid.is_some(), "{:?}", output.stdout);
+    assert_eq!(pid, group, "{:?}", output.stdout);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn kuna_leads_its_own_session_so_it_has_no_terminal_to_write_to() {
+    let script = "echo $$; ps -o sid= -p $$";
+    let output = run_plain(Path::new("/bin/sh"), ["-c", script]).expect("runs");
+    let mut words = output.stdout.split_whitespace();
+    let (pid, session) = (words.next(), words.next());
+    assert!(pid.is_some(), "{:?}", output.stdout);
+    assert_eq!(pid, session, "{:?}", output.stdout);
+}
+
+/// Limits with a working directory that always exists, for tests that do not look at it.
+fn limits(stop: &AtomicBool) -> Limits<'_> {
+    Limits::new(stop, Path::new("."))
 }
 
 /// `run` with the default limits and nothing to cancel it.
@@ -570,7 +658,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    run(kuna, args, &Limits::new(&AtomicBool::new(false)))
+    run(kuna, args, &limits(&AtomicBool::new(false)))
 }
 
 #[cfg(unix)]
@@ -579,7 +667,7 @@ fn a_call_past_its_deadline_is_killed() {
     let stop = AtomicBool::new(false);
     let limits = Limits {
         timeout: Duration::from_millis(100),
-        ..Limits::new(&stop)
+        ..limits(&stop)
     };
     let started = Instant::now();
     let result = run(Path::new("/bin/sh"), ["-c", "sleep 30"], &limits);
@@ -597,11 +685,7 @@ fn a_call_cancelled_while_running_is_killed() {
             thread::sleep(Duration::from_millis(100));
             stop.store(true, Ordering::Relaxed);
         });
-        run(
-            Path::new("/bin/sh"),
-            ["-c", "sleep 30"],
-            &Limits::new(&stop),
-        )
+        run(Path::new("/bin/sh"), ["-c", "sleep 30"], &limits(&stop))
     });
     assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
     assert!(started.elapsed() < Duration::from_secs(10));
@@ -613,7 +697,7 @@ fn a_cancelled_kuna_never_starts_a_call() {
     let result = run(
         Path::new("/definitely/not/here/kuna"),
         ["--version"],
-        &Limits::new(&stop),
+        &limits(&stop),
     );
     assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
 }
@@ -624,7 +708,7 @@ fn a_helper_that_keeps_the_pipes_open_is_still_bounded() {
     let stop = AtomicBool::new(false);
     let limits = Limits {
         timeout: Duration::from_millis(200),
-        ..Limits::new(&stop)
+        ..limits(&stop)
     };
     let started = Instant::now();
     let result = run(
@@ -641,7 +725,7 @@ fn run_capped(cap: usize, script: &str) -> Result<Output, Error> {
     let stop = AtomicBool::new(false);
     let limits = Limits {
         stdout: cap,
-        ..Limits::new(&stop)
+        ..limits(&stop)
     };
     run(Path::new("/bin/sh"), ["-c", script], &limits)
 }
