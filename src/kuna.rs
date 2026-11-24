@@ -22,6 +22,8 @@ const KUNA_RELEASES: &str = "https://github.com/Noelo-Lab/kuna/releases";
 const KUNA_FLAG: &str = "--kuna";
 /// The environment variable that picks a kuna binary.
 const KUNA_ENV: &str = "BONITO_KUNA";
+/// How many characters of the version kuna reports are kept.
+const VERSION_LIMIT: usize = 64;
 /// How many characters of kuna's stderr an error message keeps.
 const STDERR_LIMIT: usize = 300;
 
@@ -310,7 +312,7 @@ fn into_functions(document: json::Functions) -> Result<Vec<Function>, Error> {
 /// Reads the version out of `kuna --version` (`kuna 1.1005`).
 fn parse_version(output: &str) -> Result<String, Error> {
     match output.split_whitespace().collect::<Vec<_>>().as_slice() {
-        ["kuna", version, ..] => Ok((*version).to_string()),
+        ["kuna", version, ..] => Ok(text::single_line(version, VERSION_LIMIT).trim().to_string()),
         _ => Err(Error::NotKuna(text::single_line(
             output.trim(),
             STDERR_LIMIT,
@@ -338,19 +340,21 @@ where
             stderr: printable(&output.stderr),
         });
     }
-    let notes = (!output.stderr.trim_ascii().is_empty()).then(|| printable(&output.stderr));
+    let notes = clean_stderr(&output.stderr);
     let stdout = String::from_utf8(output.stdout).map_err(Error::BadOutput)?;
     Ok(Output { stdout, notes })
 }
 
-/// kuna's stderr can echo text from a hostile binary: keep it short, one line, free of control characters.
+/// kuna's stderr can echo text from a hostile binary: keep it short, one line, safe to print; none if empty.
+fn clean_stderr(stderr: &[u8]) -> Option<String> {
+    let text = text::single_line(&String::from_utf8_lossy(stderr), STDERR_LIMIT);
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// `clean_stderr`, or a placeholder for use in an error message.
 fn printable(stderr: &[u8]) -> String {
-    let text = text::single_line(String::from_utf8_lossy(stderr).trim(), STDERR_LIMIT);
-    if text.is_empty() {
-        "(no message)".to_string()
-    } else {
-        text
-    }
+    clean_stderr(stderr).unwrap_or_else(|| "(no message)".to_string())
 }
 
 #[cfg(test)]
@@ -762,11 +766,25 @@ mod tests {
 
     #[test]
     fn a_relative_search_path_entry_is_never_searched() {
-        let dir = TempDir(PathBuf::from("target/bonito-relative-path-test"));
+        let dir = TempDir(PathBuf::from(format!(
+            "target/bonito-relative-path-test-{}",
+            std::process::id()
+        )));
         fs::create_dir_all(&dir.0).expect("temp dir");
         dir.touch_exe(KUNA_EXE);
         let result = resolve(None, None, Some(dir.0.as_os_str()));
         assert!(matches!(result, Err(Error::NotOnPath)), "{result:?}");
+    }
+
+    #[test]
+    fn a_message_of_only_control_characters_is_no_message() {
+        assert_eq!(printable(b"\x1b"), "(no message)");
+    }
+
+    #[test]
+    fn a_version_from_kuna_is_cleaned() {
+        let version = parse_version("kuna 1.1\u{1b}]0;x\u{7}").expect("parses");
+        assert!(!version.chars().any(char::is_control), "{version:?}");
     }
 
     #[test]

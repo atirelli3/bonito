@@ -7,9 +7,24 @@ use std::ops::Deref;
 /// The most characters a name or message keeps.
 const TEXT_LIMIT: usize = 1024;
 
-/// Whether a character could change what a terminal shows: controls and bidirectional overrides.
+/// Whether a character could change what a terminal shows or hide what a name says: controls, line
+/// separators, bidirectional overrides, and invisible, filler or tag characters.
 fn is_unsafe(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{115F}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 /// `text` on one line: unsafe characters become spaces, and at most `limit` characters are kept.
@@ -25,6 +40,7 @@ pub fn single_line(text: &str, limit: usize) -> String {
 pub struct Text(String);
 
 impl Text {
+    /// The cleaned text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -55,6 +71,7 @@ impl<'de> Deserialize<'de> for Text {
 pub struct Code(String);
 
 impl Code {
+    /// The cleaned text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -92,6 +109,12 @@ mod tests {
     #[test]
     fn single_line_replaces_controls_and_bidi_overrides_with_spaces() {
         assert_eq!(single_line("a\u{1b}[31mb\nc\u{202e}d", 100), "a [31mb c d");
+    }
+
+    #[test]
+    fn single_line_replaces_invisible_and_line_separator_characters() {
+        let hidden = "a\u{2028}b\u{200b}c\u{feff}d\u{e0041}e\u{61c}f";
+        assert_eq!(single_line(hidden, 100), "a b c d e f");
     }
 
     #[test]
