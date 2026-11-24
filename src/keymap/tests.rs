@@ -68,11 +68,12 @@ fn feed(keymap: &mut Keymap, keys: &str) -> Vec<Action> {
         .collect()
 }
 
-/// Every action `keys` completes on a fresh keymap, which must then be idle: nothing left pending.
+/// Every action `keys` completes on a fresh keymap, which must then be idle: nothing pending, no prompt open.
 fn feed_fresh(keys: &str) -> Vec<Action> {
     let mut keymap = Keymap::default();
     let actions = feed(&mut keymap, keys);
     assert_eq!(keymap.pending(), "", "keys left something pending: {keys}");
+    assert_eq!(keymap.prompt(), None, "keys left a prompt open: {keys}");
     actions
 }
 
@@ -387,6 +388,271 @@ fn every_prefix_shows_while_it_waits() {
         feed(&mut keymap, keys);
         assert_eq!(keymap.pending(), shown, "keys: {keys}");
     }
+}
+
+/// What a prompt shows after `keys` on a fresh keymap: the leader and the text typed so far.
+fn prompt_after(keys: &str) -> Option<(char, String)> {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, keys);
+    keymap
+        .prompt()
+        .map(|(leader, text)| (leader, text.to_string()))
+}
+
+fn command(text: &str) -> Action {
+    Action::Command(text.to_string())
+}
+
+fn search(text: &str, forward: bool) -> Action {
+    Action::Search {
+        text: text.to_string(),
+        forward,
+    }
+}
+
+#[test]
+fn colon_slash_and_question_mark_open_a_prompt() {
+    assert_eq!(prompt_after(":"), Some((':', String::new())));
+    assert_eq!(prompt_after("/"), Some(('/', String::new())));
+    assert_eq!(prompt_after("?"), Some(('?', String::new())));
+    assert_eq!(prompt_after(":ab"), Some((':', "ab".to_string())));
+    assert_eq!(prompt_after("j"), None);
+}
+
+#[test]
+fn enter_hands_over_the_command_or_the_search() {
+    check(&[
+        (":q<CR>", command("q")),
+        (":e /tmp/a b<CR>", command("e /tmp/a b")),
+        ("/foo<CR>", search("foo", true)),
+        ("?bar<CR>", search("bar", false)),
+    ]);
+}
+
+#[test]
+fn the_prompt_closes_after_enter_and_normal_keys_work_again() {
+    let mut keymap = Keymap::default();
+    assert_eq!(feed(&mut keymap, ":q<CR>"), vec![command("q")]);
+    assert_eq!(keymap.prompt(), None);
+    assert_eq!(feed(&mut keymap, "j"), vec![go(Motion::Down, None)]);
+}
+
+#[test]
+fn normal_mode_keys_are_text_inside_a_prompt() {
+    check(&[
+        (":jjq<CR>", command("jjq")),
+        ("/gg5<CR>", search("gg5", true)),
+        (":ZZ<CR>", command("ZZ")),
+    ]);
+}
+
+#[test]
+fn a_count_is_dropped_when_a_prompt_opens() {
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        feed(&mut keymap, "5:x<CR>j"),
+        vec![command("x"), go(Motion::Down, None)]
+    );
+}
+
+#[test]
+fn escape_and_ctrl_c_close_the_prompt_without_an_action() {
+    check_nothing(&[":ab<Esc>", "/ab<Esc>", ":ab<C-c>", "?ab<C-c>"]);
+}
+
+#[test]
+fn ctrl_c_in_a_prompt_does_not_quit_but_a_second_one_does() {
+    let mut keymap = Keymap::default();
+    assert_eq!(feed(&mut keymap, ":ab<C-c>"), vec![]);
+    assert_eq!(feed(&mut keymap, "<C-c>"), vec![Action::Quit]);
+}
+
+#[test]
+fn backspace_deletes_and_leaves_the_prompt_on_an_empty_line() {
+    check(&[(":ab<BS>c<CR>", command("ac"))]);
+    assert_eq!(prompt_after(":<BS>"), None);
+    assert_eq!(prompt_after(":a<BS>"), Some((':', String::new())));
+    assert_eq!(prompt_after(":a<BS><BS>"), None);
+}
+
+#[test]
+fn ctrl_u_clears_the_line() {
+    check(&[(":abc<C-u>d<CR>", command("d"))]);
+}
+
+#[test]
+fn an_empty_line_hands_over_nothing_and_is_not_remembered() {
+    check_nothing(&[":<CR>", "/<CR>"]);
+    // With an empty line in the history, the first Up would show it and only the second reach "a".
+    assert_eq!(
+        prompt_after(":a<CR>:<CR>:<Up>"),
+        Some((':', "a".to_string()))
+    );
+}
+
+#[test]
+fn control_characters_and_alt_keys_are_not_typed() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":a");
+    for code in ['\u{7}', '\n', '\u{1b}', '\u{7f}'] {
+        keymap.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE));
+    }
+    feed(&mut keymap, "<A-x><F5>b");
+    assert_eq!(keymap.prompt(), Some((':', "ab")));
+}
+
+#[test]
+fn invisible_and_direction_changing_characters_are_not_typed() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":a");
+    for code in [
+        '\u{200B}', '\u{200E}', '\u{2028}', '\u{202E}', '\u{2066}', '\u{FEFF}',
+    ] {
+        keymap.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE));
+    }
+    feed(&mut keymap, "é");
+    assert_eq!(keymap.prompt(), Some((':', "aé")));
+}
+
+#[test]
+fn altgr_characters_are_typed_in_a_prompt() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":");
+    let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    keymap.key(KeyEvent::new(KeyCode::Char('{'), altgr));
+    assert_eq!(keymap.prompt(), Some((':', "{")));
+}
+
+#[test]
+fn text_beyond_the_limit_is_not_typed() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":");
+    feed(&mut keymap, &"a".repeat(LINE_LIMIT + 100));
+    let typed = keymap.prompt().map(|(_, text)| text.chars().count());
+    assert_eq!(typed, Some(LINE_LIMIT));
+}
+
+#[test]
+fn the_limit_counts_characters_not_bytes() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":");
+    feed(&mut keymap, &"é".repeat(LINE_LIMIT + 100));
+    let typed = keymap.prompt().map(|(_, text)| text.chars().count());
+    assert_eq!(typed, Some(LINE_LIMIT));
+}
+
+#[test]
+fn the_pending_display_is_empty_inside_a_prompt() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":ab");
+    assert_eq!(keymap.pending(), "");
+}
+
+#[test]
+fn up_and_down_walk_the_history_and_restore_the_line_being_typed() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":one<CR>:two<CR>:dra");
+    feed(&mut keymap, "<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "two")));
+    feed(&mut keymap, "<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "one")));
+    feed(&mut keymap, "<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "one")));
+    feed(&mut keymap, "<Down>");
+    assert_eq!(keymap.prompt(), Some((':', "two")));
+    feed(&mut keymap, "<Down>");
+    assert_eq!(keymap.prompt(), Some((':', "dra")));
+    feed(&mut keymap, "<Down>");
+    assert_eq!(keymap.prompt(), Some((':', "dra")));
+}
+
+#[test]
+fn ctrl_p_and_ctrl_n_are_up_and_down() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":one<CR>:two<CR>:<C-p><C-p>");
+    assert_eq!(keymap.prompt(), Some((':', "one")));
+    feed(&mut keymap, "<C-n>");
+    assert_eq!(keymap.prompt(), Some((':', "two")));
+}
+
+#[test]
+fn an_empty_history_has_nothing_to_recall() {
+    assert_eq!(prompt_after(":<Up><Down>"), Some((':', String::new())));
+}
+
+#[test]
+fn a_recalled_line_can_be_edited_and_is_stored_as_a_new_entry() {
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        feed(&mut keymap, ":one<CR>:<Up>x<CR>"),
+        vec![command("one"), command("onex")]
+    );
+    feed(&mut keymap, ":<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "onex")));
+    feed(&mut keymap, "<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "one")));
+}
+
+#[test]
+fn editing_a_recalled_line_ends_the_walk_and_a_later_up_starts_again() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":a<CR>:b<CR>:<Up>x");
+    assert_eq!(keymap.prompt(), Some((':', "bx")));
+    feed(&mut keymap, "<Down>");
+    assert_eq!(keymap.prompt(), Some((':', "bx")));
+    feed(&mut keymap, "<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "b")));
+    feed(&mut keymap, "<Down>");
+    assert_eq!(keymap.prompt(), Some((':', "bx")));
+}
+
+#[test]
+fn backspace_and_ctrl_u_after_a_recall_end_the_walk_too() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":a<CR>:b<CR>:<Up><Up><BS><Up>");
+    assert_eq!(keymap.prompt(), Some((':', "b")));
+    feed(&mut keymap, "<Esc>:<Up><C-u><Up>");
+    assert_eq!(keymap.prompt(), Some((':', "b")));
+}
+
+#[test]
+fn consecutive_duplicates_are_stored_once() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":a<CR>:b<CR>:b<CR>:<Up><Up>");
+    assert_eq!(keymap.prompt(), Some((':', "a")));
+}
+
+#[test]
+fn escape_keeps_the_history_and_stores_nothing() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":one<CR>:two<Esc>:<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "one")));
+}
+
+#[test]
+fn only_the_newest_hundred_lines_are_kept() {
+    let mut keymap = Keymap::default();
+    let extra = 5;
+    for n in 0..HISTORY_LIMIT + extra {
+        feed(&mut keymap, &format!(":c{n}<CR>"));
+    }
+    feed(&mut keymap, ":");
+    for _ in 0..HISTORY_LIMIT * 2 {
+        feed(&mut keymap, "<Up>");
+    }
+    let oldest = format!("c{extra}");
+    assert_eq!(keymap.prompt(), Some((':', oldest.as_str())));
+}
+
+#[test]
+fn commands_and_searches_have_separate_histories_and_slash_and_question_mark_share_one() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":cmd<CR>/pat<CR>/<Up>");
+    assert_eq!(keymap.prompt(), Some(('/', "pat")));
+    feed(&mut keymap, "<Esc>:<Up>");
+    assert_eq!(keymap.prompt(), Some((':', "cmd")));
+    feed(&mut keymap, "<Esc>?<Up>");
+    assert_eq!(keymap.prompt(), Some(('?', "pat")));
 }
 
 #[test]
