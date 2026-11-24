@@ -312,7 +312,7 @@ fn a_window_of_no_rows_still_shows_the_cursor_line() {
 fn search_goes_forward_with_smartcase_and_wraps() {
     let mut p = pane("foo bar\nbaz foo\nFoo");
     for want in [(1, 4), (2, 0), (0, 0)] {
-        assert!(p.find("foo", true, 10));
+        assert!(p.find("foo", false, true, 10));
         assert_eq!(at(&p), want);
     }
 }
@@ -320,16 +320,16 @@ fn search_goes_forward_with_smartcase_and_wraps() {
 #[test]
 fn a_capital_in_the_search_makes_it_case_sensitive() {
     let mut p = pane("foo bar\nbaz foo\nFoo");
-    assert!(p.find("Foo", true, 10));
+    assert!(p.find("Foo", false, true, 10));
     assert_eq!(at(&p), (2, 0));
 }
 
 #[test]
 fn search_backward_wraps_to_the_end() {
     let mut p = pane("foo bar\nbaz foo\nFoo");
-    assert!(p.find("foo", false, 10));
+    assert!(p.find("foo", false, false, 10));
     assert_eq!(at(&p), (2, 0));
-    assert!(p.find("foo", false, 10));
+    assert!(p.find("foo", false, false, 10));
     assert_eq!(at(&p), (1, 4));
 }
 
@@ -337,11 +337,11 @@ fn search_backward_wraps_to_the_end() {
 fn on_one_line_search_wraps_in_both_directions() {
     let mut p = pane("x foo foo x");
     for want in [2, 6, 2] {
-        assert!(p.find("foo", true, 10));
+        assert!(p.find("foo", false, true, 10));
         assert_eq!(at(&p), (0, want));
     }
     for want in [6, 2] {
-        assert!(p.find("foo", false, 10));
+        assert!(p.find("foo", false, false, 10));
         assert_eq!(at(&p), (0, want));
     }
 }
@@ -349,10 +349,10 @@ fn on_one_line_search_wraps_in_both_directions() {
 #[test]
 fn search_finds_overlapping_matches_and_counts_characters() {
     let mut p = pane("aaa");
-    assert!(p.find("aa", true, 10));
+    assert!(p.find("aa", false, true, 10));
     assert_eq!(at(&p), (0, 1));
     let mut p = pane("éa");
-    assert!(p.find("a", true, 10));
+    assert!(p.find("a", false, true, 10));
     assert_eq!(at(&p), (0, 1));
 }
 
@@ -360,17 +360,55 @@ fn search_finds_overlapping_matches_and_counts_characters() {
 fn a_search_that_finds_nothing_says_so_and_does_not_move() {
     let mut p = pane("foo\nbar");
     go(&mut p, Down, None);
-    assert!(!p.find("zzz", true, 10));
-    assert!(!p.find("zzz", false, 10));
-    assert!(!p.find("", true, 10));
+    assert!(!p.find("zzz", false, true, 10));
+    assert!(!p.find("zzz", false, false, 10));
+    assert!(!p.find("", false, true, 10));
     assert_eq!(at(&p), (1, 0));
 }
 
 #[test]
 fn a_search_scrolls_the_match_into_view() {
     let mut p = pane(&format!("{}target", "x\n".repeat(80)));
-    assert!(p.find("target", true, 10));
+    assert!(p.find("target", false, true, 10));
     assert_eq!((p.line(), p.top()), (80, 71));
+}
+
+#[test]
+fn a_whole_word_search_skips_longer_words_and_keeps_the_case() {
+    let mut p = pane("foo foobar Foo\n_foo foo.x");
+    for want in [(1, 5), (0, 0), (1, 5)] {
+        assert!(p.find("foo", true, true, 10));
+        assert_eq!(at(&p), want);
+    }
+    assert!(p.find("foo", true, false, 10));
+    assert_eq!(at(&p), (0, 0));
+}
+
+#[test]
+fn a_letter_beside_the_match_is_part_of_the_word_whatever_its_script() {
+    let mut p = pane("éfoo foo");
+    assert!(p.find("foo", true, true, 10));
+    assert_eq!(at(&p), (0, 5));
+}
+
+#[test]
+fn go_to_word_moves_to_the_start_of_the_word_under_or_after_the_cursor() {
+    let mut p = pane("  foo.bar");
+    assert_eq!(p.go_to_word(10).as_deref(), Some("foo"));
+    assert_eq!(at(&p), (0, 2));
+    go(&mut p, Right, Some(1));
+    assert_eq!(p.go_to_word(10).as_deref(), Some("foo"));
+    assert_eq!(at(&p), (0, 2));
+    go(&mut p, LineEnd, None);
+    assert_eq!(p.go_to_word(10).as_deref(), Some("bar"));
+    assert_eq!(at(&p), (0, 6));
+}
+
+#[test]
+fn a_whole_word_search_that_finds_nothing_does_not_move() {
+    let mut p = pane("foobar\nbarfoo");
+    assert!(!p.find("foo", true, true, 10));
+    assert_eq!(at(&p), (0, 0));
 }
 
 #[test]
@@ -401,7 +439,7 @@ fn a_pane_without_lines_is_one_empty_line() {
         assert_eq!((at(&p), p.top()), ((0, 0), 0), "{motion:?}");
     }
     p.scroll(ScrollTo::Center, 10);
-    assert!(!p.find("x", true, 10));
+    assert!(!p.find("x", false, true, 10));
     assert_eq!((at(&p), p.top()), ((0, 0), 0));
 }
 
@@ -452,9 +490,9 @@ fn a_brace_back_to_the_first_line_lands_on_column_zero() {
 fn a_match_under_the_cursor_is_found_again_after_wrapping() {
     let mut p = pane("x foo y");
     go(&mut p, Right, Some(2));
-    assert!(p.find("foo", true, 10));
+    assert!(p.find("foo", false, true, 10));
     assert_eq!(at(&p), (0, 2));
-    assert!(p.find("foo", false, 10));
+    assert!(p.find("foo", false, false, 10));
     assert_eq!(at(&p), (0, 2));
 }
 

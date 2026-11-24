@@ -1,6 +1,4 @@
 //! A cursor over lines of text: vim motions, scrolling and search. No I/O and no terminal: the views draw it.
-// ponytail: `find` waits for the searches of #53; drop this allow when it is used.
-#![allow(dead_code)]
 
 use crate::keymap::{Motion, ScrollTo};
 
@@ -208,9 +206,9 @@ fn positions(
 }
 
 /// The character columns where `needle` starts in `line`, overlapping matches included. With `fold` the case of
-/// ASCII letters is ignored.
+/// ASCII letters is ignored; with `whole` a match touching a word character on either side does not count.
 // ponytail: only ASCII letters fold, so a column never moves.
-fn columns(line: &str, needle: &str, fold: bool) -> Vec<usize> {
+fn columns(line: &str, needle: &str, fold: bool, whole: bool) -> Vec<usize> {
     let hay = if fold {
         line.to_ascii_lowercase()
     } else {
@@ -222,6 +220,15 @@ fn columns(line: &str, needle: &str, fold: bool) -> Vec<usize> {
         let at = from + offset;
         found.push(hay[..at].chars().count());
         from = at + hay[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    if whole && !found.is_empty() {
+        let chars: Vec<char> = line.chars().collect();
+        let length = needle.chars().count();
+        found.retain(|&at| {
+            let before = at.checked_sub(1).and_then(|c| chars.get(c));
+            let after = chars.get(at + length);
+            !before.is_some_and(|&c| is_word(c)) && !after.is_some_and(|&c| is_word(c))
+        });
     }
     found
 }
@@ -328,14 +335,14 @@ impl Pane {
     }
 
     /// Moves to the next match of `text` after the cursor (before it, if not `forward`), wrapping around the
-    /// text. A `text` with no capital letter matches either case (ASCII letters only). False, and no move, when
-    /// there is none or `text` is empty.
-    pub fn find(&mut self, text: &str, forward: bool, rows: usize) -> bool {
+    /// text. A `text` with no capital letter matches either case (ASCII letters only), unless `whole`: then only
+    /// the exact word matches (`*` and `#`). False, and no move, when there is none or `text` is empty.
+    pub fn find(&mut self, text: &str, whole: bool, forward: bool, rows: usize) -> bool {
         let count = self.lines.len();
         if text.is_empty() {
             return false;
         }
-        let fold = !text.chars().any(char::is_uppercase);
+        let fold = !whole && !text.chars().any(char::is_uppercase);
         let needle = if fold {
             text.to_ascii_lowercase()
         } else {
@@ -348,7 +355,7 @@ impl Pane {
                 (self.line + count - step % count) % count
             };
             let text = self.lines.get(line).map_or("", String::as_str);
-            let mut columns = columns(text, &needle, fold).into_iter();
+            let mut columns = columns(text, &needle, fold, whole).into_iter();
             // Step 0 is the rest of the cursor line, step `count` its start again.
             let found = match (forward, step) {
                 (true, 0) => columns.find(|&c| c > self.col),
@@ -370,6 +377,18 @@ impl Pane {
     /// The keyword under the cursor, or the next one on its line.
     // ponytail: punctuation alone is no word; vim's `*` would take it.
     pub fn word(&self) -> Option<String> {
+        self.word_at().map(|(_, word)| word)
+    }
+
+    /// Moves the cursor to the start of the word `word` gives, and returns it (what `*` and `#` search from).
+    pub fn go_to_word(&mut self, rows: usize) -> Option<String> {
+        let (begin, word) = self.word_at()?;
+        self.go(self.line, begin, rows);
+        Some(word)
+    }
+
+    /// The column where the keyword under the cursor starts, and the keyword.
+    fn word_at(&self) -> Option<(usize, String)> {
         let chars: Vec<char> = self.lines.get(self.line)?.chars().collect();
         let start = (self.col..chars.len()).find(|&c| is_word(chars[c]))?;
         let begin = (0..start)
@@ -381,7 +400,7 @@ impl Pane {
             .take_while(|&c| is_word(chars[c]))
             .last()
             .unwrap_or(start);
-        Some(chars[begin..=end].iter().collect())
+        Some((begin, chars[begin..=end].iter().collect()))
     }
 
     fn row_len(&self, line: usize) -> usize {

@@ -217,13 +217,8 @@ fn motions_on_a_list_that_is_not_there_yet_are_silent() {
 }
 
 #[test]
-fn searches_and_the_views_of_later_issues_say_they_are_not_available_yet() {
+fn the_views_of_later_issues_say_they_are_not_available_yet() {
     let mut app = app();
-    type_text(&mut app, "/foo");
-    enter(&mut app);
-    assert_eq!(app.message.as_deref(), Some("not available yet"));
-    type_text(&mut app, "j");
-    assert_eq!(app.message, None);
     type_text(&mut app, "gr");
     assert_eq!(app.message.as_deref(), Some("not available yet"));
     assert!(app.running());
@@ -248,15 +243,6 @@ fn a_view_with_no_function_to_show_says_why() {
     enter(&mut app);
     assert_eq!(app.message.as_deref(), Some("no function selected"));
     assert!(app.shown.is_none());
-}
-
-#[test]
-fn search_repeats_say_they_are_not_available_yet() {
-    for keys in ["n", "*"] {
-        let mut app = app();
-        type_text(&mut app, keys);
-        assert_eq!(app.message.as_deref(), Some("not available yet"), "{keys}");
-    }
 }
 
 #[test]
@@ -1041,4 +1027,136 @@ fn marks_are_for_the_code_pane() {
             "{keys}"
         );
     }
+}
+
+fn slash(app: &mut App, keys: &str) {
+    type_text(app, keys);
+    enter(app);
+}
+
+const SEARCHED: &[&str] = &["foo bar", "baz foo", "Foo foobar"];
+
+#[test]
+fn slash_jumps_to_the_next_match_and_n_and_capital_n_walk_on_and_back() {
+    let (mut app, _queue) = alpha_open(SEARCHED);
+    slash(&mut app, "/foo");
+    assert_eq!(at(&app), (1, 4));
+    type_text(&mut app, "n");
+    assert_eq!(at(&app), (2, 0));
+    type_text(&mut app, "N");
+    assert_eq!(at(&app), (1, 4));
+}
+
+#[test]
+fn a_search_that_wraps_says_so() {
+    let (mut app, _queue) = alpha_open(SEARCHED);
+    slash(&mut app, "/bar");
+    assert_eq!((at(&app), app.message.as_deref()), ((0, 4), None));
+    type_text(&mut app, "G");
+    slash(&mut app, "/baz");
+    assert_eq!(at(&app), (1, 0));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("search hit BOTTOM, continuing at TOP")
+    );
+    type_text(&mut app, "gg");
+    slash(&mut app, "?foo");
+    assert_eq!(at(&app), (2, 4));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("search hit TOP, continuing at BOTTOM")
+    );
+}
+
+#[test]
+fn question_mark_searches_backward_and_n_keeps_that_direction() {
+    let (mut app, _queue) = alpha_open(SEARCHED);
+    slash(&mut app, "?foo");
+    assert_eq!(at(&app), (2, 4));
+    type_text(&mut app, "n");
+    assert_eq!(at(&app), (2, 0));
+    type_text(&mut app, "N");
+    assert_eq!(at(&app), (2, 4));
+}
+
+#[test]
+fn star_and_hash_search_the_whole_word_under_the_cursor_case_sensitive() {
+    let (mut app, _queue) = alpha_open(SEARCHED);
+    type_text(&mut app, "*");
+    assert_eq!(at(&app), (1, 4));
+    type_text(&mut app, "n");
+    assert_eq!(at(&app), (0, 0));
+    type_text(&mut app, "#");
+    assert_eq!(at(&app), (1, 4));
+}
+
+#[test]
+fn a_search_that_finds_nothing_says_so_and_stays_put() {
+    let (mut app, _queue) = alpha_open(SEARCHED);
+    slash(&mut app, "/zzz");
+    assert_eq!(app.message.as_deref(), Some("not found: zzz"));
+    assert_eq!(at(&app), (0, 0));
+    type_text(&mut app, "n");
+    assert_eq!(app.message.as_deref(), Some("not found: zzz"));
+}
+
+#[test]
+fn n_with_no_search_and_star_with_no_word_say_so() {
+    let (mut app, _queue) = alpha_open(&["  ", "x"]);
+    type_text(&mut app, "n");
+    assert_eq!(app.message.as_deref(), Some("no previous search"));
+    type_text(&mut app, "*");
+    assert_eq!(app.message.as_deref(), Some("no word under the cursor"));
+}
+
+#[test]
+fn a_search_in_the_code_leaves_its_line_in_the_jumplist() {
+    let (mut app, _queue) = alpha_open(SEARCHED);
+    slash(&mut app, "/baz");
+    assert_eq!(at(&app), (1, 0));
+    ctrl(&mut app, 'o');
+    assert_eq!(code_pane(&app).line(), 0);
+}
+
+#[test]
+fn a_search_in_the_list_moves_the_selection() {
+    let (mut app, _queue) = three();
+    slash(&mut app, "/gam");
+    assert_eq!(app.list.line(), 2);
+    type_text(&mut app, "N");
+    assert_eq!(app.list.line(), 2);
+    slash(&mut app, "?alp");
+    assert_eq!(app.list.line(), 0);
+}
+
+#[test]
+fn star_and_hash_start_from_the_beginning_of_the_word() {
+    let (mut app, _queue) = alpha_open(&["foo bar foo", "a  foo foo"]);
+    type_text(&mut app, "l#");
+    assert_eq!(at(&app), (1, 7));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("search hit TOP, continuing at BOTTOM")
+    );
+    type_text(&mut app, "0l*");
+    assert_eq!(at(&app), (1, 7));
+}
+
+#[test]
+fn the_last_search_is_shared_by_both_panes() {
+    let (mut app, _queue) = alpha_open(&["x", "gam", "y"]);
+    ctrl_w(&mut app, 'h');
+    slash(&mut app, "/gam");
+    assert_eq!(app.list.line(), 2);
+    ctrl_w(&mut app, 'l');
+    type_text(&mut app, "n");
+    assert_eq!(at(&app), (1, 0));
+}
+
+#[test]
+fn searching_code_that_has_not_loaded_says_so() {
+    let (mut app, _queue) = three();
+    enter(&mut app);
+    slash(&mut app, "/foo");
+    assert_eq!(app.message.as_deref(), Some("nothing to search yet"));
 }

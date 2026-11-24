@@ -21,6 +21,15 @@ const MAX_VIEWS: usize = 64;
 /// What a mark key says outside the code pane.
 const CODE_ONLY: &str = "marks are for the code pane";
 
+/// The last search, which `n` and `N` repeat.
+#[derive(Clone)]
+struct Query {
+    text: String,
+    /// Only the whole word matches, and the case counts (`*` and `#`).
+    whole: bool,
+    forward: bool,
+}
+
 /// Everything the loop reacts to.
 pub enum Msg {
     /// A terminal event, or the failure to read one.
@@ -116,6 +125,7 @@ pub struct App {
     jumps: Jumps,
     /// Lower case marks belong to the view they were set in (`Some`), upper case ones to the session (`None`).
     marks: HashMap<(Option<Request>, char), Spot>,
+    search: Option<Query>,
     requests: Sender<Request>,
     /// The height of the panes' text, as drawn last.
     rows: usize,
@@ -144,6 +154,7 @@ impl App {
             views: HashMap::new(),
             jumps: Jumps::default(),
             marks: HashMap::new(),
+            search: None,
             requests,
             rows: 0,
             running: true,
@@ -266,7 +277,7 @@ impl App {
     }
 
     /// Does what `action` asks.
-    // ponytail: #53 acts on searches and #9 on the other views; until then they say it is not available.
+    // ponytail: #9 acts on the other views; until then they say it is not available.
     // Every action is named so a new one cannot be dropped by accident.
     fn apply(&mut self, action: Action) {
         match action {
@@ -284,9 +295,83 @@ impl App {
             Action::Forward => self.walk(false),
             Action::SetMark(mark) => self.set_mark(mark),
             Action::JumpMark { mark, exact } => self.jump_mark(mark, exact),
-            Action::Search { .. } | Action::SearchNext { .. } | Action::SearchWord { .. } => {
-                self.not_yet();
-            }
+            Action::Search { text, forward } => self.search(text, false, forward),
+            Action::SearchNext { reverse } => self.repeat_search(reverse),
+            Action::SearchWord { forward } => self.search_word(forward),
+        }
+    }
+
+    /// `/` and `?`: remembers the search, then looks for it.
+    fn search(&mut self, text: String, whole: bool, forward: bool) {
+        self.search = Some(Query {
+            text,
+            whole,
+            forward,
+        });
+        self.find(false);
+    }
+
+    /// `n`, or `N` if `reverse`: the last search again.
+    fn repeat_search(&mut self, reverse: bool) {
+        if self.search.is_some() {
+            self.find(reverse);
+        } else {
+            self.message = Some("no previous search".to_string());
+        }
+    }
+
+    /// `*` and `#`: the whole word under the cursor.
+    fn search_word(&mut self, forward: bool) {
+        let rows = self.rows;
+        let Some(pane) = self.focused_mut() else {
+            return self.nothing_to_search();
+        };
+        match pane.go_to_word(rows) {
+            Some(word) => self.search(word, true, forward),
+            None => self.message = Some("no word under the cursor".to_string()),
+        }
+    }
+
+    fn nothing_to_search(&mut self) {
+        self.message = Some("nothing to search yet".to_string());
+    }
+
+    /// Moves the focused pane to the next match of the last search (the other way if `reverse`); a jump in the code
+    /// leaves the line it started from in the jumplist.
+    fn find(&mut self, reverse: bool) {
+        let Some(query) = self.search.clone() else {
+            return;
+        };
+        let forward = query.forward != reverse;
+        let rows = self.rows;
+        let before = (self.focus == Focus::Code).then(|| self.here()).flatten();
+        let Some(pane) = self.focused_mut() else {
+            return self.nothing_to_search();
+        };
+        let from = (pane.line(), pane.col());
+        if !pane.find(&query.text, query.whole, forward, rows) {
+            self.message = Some(format!("not found: {}", query.text));
+            return;
+        }
+        let to = (pane.line(), pane.col());
+        let wrapped = if forward { to <= from } else { to >= from };
+        self.message = wrapped.then(|| {
+            let (hit, then) = if forward {
+                ("BOTTOM", "TOP")
+            } else {
+                ("TOP", "BOTTOM")
+            };
+            format!("search hit {hit}, continuing at {then}")
+        });
+        self.record_jump(before);
+    }
+
+    /// Leaves `before` in the jumplist if the cursor has since changed line.
+    fn record_jump(&mut self, before: Option<Spot>) {
+        if let Some(before) = before
+            && self.here().is_some_and(|now| now.line != before.line)
+        {
+            self.jumps.record(before);
         }
     }
 
@@ -307,11 +392,7 @@ impl App {
             );
         let before = jump.then(|| self.here()).flatten();
         self.with_pane(|pane, rows| pane.motion(motion, count, rows));
-        if let Some(before) = before
-            && self.here().is_some_and(|now| now.line != before.line)
-        {
-            self.jumps.record(before);
-        }
+        self.record_jump(before);
     }
 
     /// The view shown with the cursor in it; the top while it loads.
@@ -443,13 +524,16 @@ impl App {
     /// Lets `change` act on the pane that has the focus, with the height of the panes.
     fn with_pane(&mut self, change: impl FnOnce(&mut Pane, usize)) {
         let rows = self.rows;
+        if let Some(pane) = self.focused_mut() {
+            change(pane, rows);
+        }
+    }
+
+    /// The pane that has the focus; none while the code pane has nothing loaded.
+    fn focused_mut(&mut self) -> Option<&mut Pane> {
         match self.focus {
-            Focus::List => change(&mut self.list, rows),
-            Focus::Code => {
-                if let Some(pane) = self.code_mut() {
-                    change(pane, rows);
-                }
-            }
+            Focus::List => Some(&mut self.list),
+            Focus::Code => self.code_mut(),
         }
     }
 

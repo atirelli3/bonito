@@ -113,6 +113,14 @@ fact the code doesn't say.
   entry beats a containing function; otherwise the first match in address order wins (duplicate names are not told
   apart). Follow keeps the view shown, `:e` opens the decompile view.
 - [WHY] A recorded spot or mark in a view dropped from the cache (`evict`) comes back with the cursor at the top.
+- [WHY] Search acts on the focused pane (`Pane::find`). `/` `?` use smartcase (no capital = ASCII case folded);
+  `* #` take the word under the cursor, whole word and case-sensitive. `n` repeats in the stored direction, `N`
+  reverses it and never changes it; the last search is stored even when it found nothing, and both panes share it.
+  `* #` first move the cursor to the start of the word (`Pane::go_to_word`, as vim does), or `#` mid-word would find
+  its own word; a word of punctuation only is skipped. Counts are ignored. A wrap says so ("search hit BOTTOM,
+  continuing at TOP"); a miss says "not found: X"; code still loading says "nothing to search yet". Every search
+  in the code (`/ ? n N * #`) leaves its line in the jumplist when the line changed, like `G gg % { }`. No list
+  filter, no `hlsearch`; an empty `/` line does nothing (vim repeats the last search).
 
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool
