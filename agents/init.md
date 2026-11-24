@@ -1,8 +1,8 @@
 # bonito — project init
 
 **bonito** = a keyboard-driven terminal UI (Rust, ratatui) for [kuna](https://github.com/Noelo-Lab/kuna), the
-agent-first Rust decompiler originally ported from Ghidra. Scope (which kuna features, in what layout) is the first
-plan's job.
+agent-first Rust decompiler originally ported from Ghidra. v1 = every user-facing kuna feature, vim motions throughout,
+REA as an optional second engine (scope + roadmap below; engine contracts in `agents/memory/kuna.md`).
 
 Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newest audit + review, and the board
 (`scripts/task.sh`). Code carries **no rationale**: the *why* is only in `agents/memory/`.
@@ -11,7 +11,8 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
 - Bootstrap done: crate `bonito` 0.1.0 (hello world + `tests/smoke.rs`), workflow rules (`CLAUDE.md`), CI
   (`ci.yml`) and release (`release.yml`) pipelines, public repo `atirelli3/bonito` with a `main` ruleset, type labels,
   Projects board **bonito** https://github.com/users/atirelli3/projects/1 (Todo / In Progress / In Review / Done).
-- No feature code yet. Open: #1 `chore: add a LICENSE` (Todo, waits on the user's choice).
+- Renamed tuna → bonito (#3, merged). v1 plan approved 2026-11-24; its items are on the board (below).
+- No feature code yet. Open: #1 `chore: add a LICENSE` (Todo, waits on the user's choice; blocks #18, #19).
 
 ## Layout
 | Path | What |
@@ -37,8 +38,22 @@ gh with the `project` scope, jq.
 - Web UI (decompile.run): `integrations/web/` — `kuna-web.js`, `kuna-worker.js` over `kuna-wasm`.
 - Releases: linux x86_64/arm64, macOS arm64/x86_64, windows x86_64; SLEIGH specs embedded in the binary.
 
+## v1 roadmap (each is a parent issue; sub-issues are cut when its branch is)
+Design: spawn `kuna` (`--json`) on worker threads → `mpsc` → ratatui loop; deps `ratatui`, `serde`, `serde_json` only.
+Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; `kuna-version` pins the tested kuna.
+| # | Item |
+|---|---|
+| #3 | rename → bonito (done) |
+| #4 | record the v1 design |
+| #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` |
+| #6 | TUI shell · #7 vim keymap · #8 core views (**MVP**) |
+| #9 | xrefs, strings, crypto, blobs, hex, p-code, summary · #10 options (`catalog`, `:set`, `:mode`) |
+| #11 | whole-binary cache (`decompile-project --stream`) · #12 call graph · #13 unpack + FID |
+| #14 | REA engine (static-only allow-list) · #15 visual mode + OSC 52 yank |
+| #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
+
 ## Open work / next steps
-1. First plan (Plan Mode): MVP scope and how bonito drives kuna (git dependency on its crates vs spawning `kuna`);
-   then issues → board → first item branch.
+1. #4 → #5 kuna driver → #6–#8 MVP (first release candidate); `v0.1.0` only on the user's `release`.
 2. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
-3. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
+3. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
+4. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
