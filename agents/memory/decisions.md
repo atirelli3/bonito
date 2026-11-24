@@ -40,8 +40,9 @@ fact the code doesn't say.
   co-install the pinned kuna. AUR and Nix wait on the LICENSE (#1) and, for AUR, an account + `AUR_SSH_PRIVATE_KEY`.
 - [WHY] ratatui `try_init` / `try_restore`, not `init` / `restore`: the latter panic, and the project rule is no panics.
 - [WHY] No clap and no async runtime: one positional + `--kuna PATH`, std threads + `mpsc` for the kuna / REA jobs.
-- [WHY] `src/kuna.rs` carries `#![allow(dead_code)]` (a `// ponytail:` marker) until #8 calls `decompile` and
-  `disassemble` (the TUI of #6 only uses `functions`): remove it then.
+- [WHY] The crate-wide `#![allow(dead_code)]` of `src/kuna.rs` went with #49 (the worker calls `decompile` and
+  `disassemble`); `src/kuna/json.rs` keeps one for the JSON fields no view reads yet, `src/view.rs` for `find` and
+  `word`, `src/keymap.rs` for its unused actions: each `// ponytail:` marker names the issue that removes it.
   `#[expect]` would fail the test build (the lint doesn't fire there), and under `-D warnings` an unused `pub use`
   is an error: re-export a type only when something names it.
 - [WHY] Unit tests that need a child process run `/bin/sh -c '…'` (Unix only), never a script file they just wrote:
@@ -79,6 +80,28 @@ fact the code doesn't say.
   clears it. Never write command feedback to `status`: it can hold the only reason a request failed.
 - [WHY] `keymap::View` is the view enum #8 imports, not a second one. The prompt draws on the last row of the screen,
   not of the status area, so it shows on a terminal of one or two rows.
+
+## Core views (#8: `src/app.rs`, `src/view.rs`, `src/ui.rs`)
+- [USER-YES] (2026-11-24) `:e NAME|0xADDR` jumps to a function (name, alias or address) in the decompile view; one
+  binary per session, `:e` never opens another file.
+- [USER-YES] (2026-11-24) `/ ? n N * #` are vim search (jump to the next match) in both panes; there is no list filter.
+- [WHY] One worker thread lists the functions, then answers `Request{view,address}` one at a time, and of the requests
+  waiting only the newest **per view** (two panes asking at once both get an answer). It ends on `Kuna::cancel` (it
+  polls every 100 ms) or when every sender is gone, so `App` may hold a `Sender` and drop in any order. A request the
+  worker dropped is never answered: `open` asks again for a view that is `Loading` or `Failed`.
+- [WHY] Status follows the view shown. `App.status` is only kuna's notes or failure for the function list; a view's
+  notes or failure live in its `Loaded` entry and `App::view_note()` shows the current one's, so another view's "cut
+  short" never lingers. A loaded view is never replaced by a later answer (an `Err` neither): the user's cursor stays.
+- [WHY] Caps against a hostile binary: a view keeps 100 000 lines of 4 096 characters (cut, and a note says so), a
+  worker panic keeps its message, at most 64 loaded views stay (arbitrary victims, never the one shown; #11 replaces
+  it). A decompile with `code: null` is an error, not a blank pane.
+- [WHY] `view::Pane` follows vim for `w b e { } % gg G` and the sticky column (a `h` / `l` that cannot move keeps it);
+  checked against vim 9.1 on 30 000 random sequences with count 1. Known differences, all `// ponytail:` in the code:
+  `$ ^ Ctrl-d/u/f/b %` ignore their count, a count past the last paragraph runs to the edge, brackets in strings
+  count for `%`, case folds for ASCII only, one key can take ~1 s on text at the cap, sideways scroll is stateless.
+- [WHY] `App::set_rows` is called only by `run` (from `ui::text_rows`); a test that draws or pages must call it, or
+  the window is 0 rows and every `j` scrolls it. Focus moves to the code pane on every open, and the code pane takes
+  the focus only with a view shown.
 
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool
