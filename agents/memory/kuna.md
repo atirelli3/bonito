@@ -40,7 +40,10 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
   kills kuna on the deadline, the cap or `Kuna::cancel` (a sticky flag: the app calls it on quit, then joins its
   workers, so no kuna outlives bonito). A stopped call's reader threads are not joined (the pipes may stay open).
   A failed kill, a read error, a reader panic or a failed `try_wait` is an error, never a truncated answer.
-  Limit: only the direct child is killed (process group / job object: #59).
+  On Unix a stopped call also SIGKILLs kuna's whole process group first (`kill_group`, #63), so its helpers die and
+  stop holding the pipes. Ceilings: a helper that left the group (`setsid`) survives; a leader reaped long ago
+  whose group has emptied could have its pid reused (window <= the deadline). The pid is guarded `> 1`: `kill(0)`
+  is bonito's own group and `kill(-1)` every process the user owns. Windows kills only kuna itself (job object: #66).
 - [WHY] kuna runs with `env_clear()` plus an allowlist (`PATH HOME SYSTEMROOT LANG LOCALAPPDATA`, four `XDG_*_HOME`
   names, `LC_*`, `KUNA_*`), so bonito's tokens and cloud keys never reach a process that parses a hostile binary.
   Relative and empty `PATH` entries are dropped: a helper kuna spawns by name must not find a planted file in its cwd.
@@ -60,8 +63,7 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
   kuna (same user) can still write to the terminal's device file by path, so this is not a sandbox. std's
   `CommandExt::setsid` is still nightly (rust-lang/rust#105376), so this is the repo's only `unsafe`: a `pre_exec`
   closure that calls a hand-declared `safe fn setsid()` (no `libc` crate). It costs the posix_spawn fast path, which
-  does not matter at one spawn per request. kuna also leads its own process group now, which #59 will use to kill
-  its helpers. Side effect: kuna no longer gets the terminal's SIGHUP, so if the terminal closes it runs on until
+  does not matter at one spawn per request. kuna also leads its own process group, which `stop_child` kills (#63). Side effect: kuna no longer gets the terminal's SIGHUP, so if the terminal closes it runs on until
   its own deadline (#59, with the unhandled SIGTERM / SIGHUP of bonito itself). Not done on Windows: a console
   child inherits bonito's console and can open `CONOUT$`; `creation_flags(DETACHED_PROCESS)` is the fix (#59). The
   tests prove the process group everywhere on Unix and the session id on Linux (`ps -o sid` is not portable to macOS).

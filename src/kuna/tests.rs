@@ -691,6 +691,64 @@ fn a_call_cancelled_while_running_is_killed() {
     assert!(started.elapsed() < Duration::from_secs(10));
 }
 
+/// Runs `script` as kuna with a 2 s deadline (a loaded runner must still start the shell); it starts `sleep 30` in
+/// the background and writes its pid to `helper`. Returns that pid once the call has ended with a timeout.
+#[cfg(unix)]
+fn helper_pid_after_a_timeout(name: &str, script: &str) -> String {
+    let dir = TempDir::new(name);
+    let stop = AtomicBool::new(false);
+    let limits = Limits {
+        timeout: Duration::from_secs(2),
+        ..Limits::new(&stop, &dir.0)
+    };
+    let result = run(Path::new("/bin/sh"), ["-c", script], &limits);
+    assert!(matches!(result, Err(Error::TimedOut(_))), "{result:?}");
+    let pid = fs::read_to_string(dir.0.join("helper")).expect("the script wrote the helper's pid");
+    let pid = pid
+        .trim()
+        .parse::<u32>()
+        .expect("the helper's pid is a number");
+    pid.to_string()
+}
+
+/// Whether the process `pid` is still running.
+#[cfg(unix)]
+fn alive(pid: &str) -> bool {
+    Command::new("/bin/sh")
+        .args(["-c", &format!("kill -0 {pid}")])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Waits up to 2 s for the process `pid` to end.
+#[cfg(unix)]
+fn ends_soon(pid: &str) -> bool {
+    (0..40).any(|_| {
+        let gone = !alive(pid);
+        if !gone {
+            thread::sleep(Duration::from_millis(50));
+        }
+        gone
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stopped_call_kills_the_helpers_kuna_started() {
+    let script = "sleep 30 & echo $! > helper.tmp && mv helper.tmp helper; wait";
+    let pid = helper_pid_after_a_timeout("kill-helper", script);
+    assert!(ends_soon(&pid), "helper {pid} still runs");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stopped_call_kills_the_helpers_of_a_kuna_that_already_exited() {
+    let script = "sleep 30 & echo $! > helper.tmp && mv helper.tmp helper; exit 0";
+    let pid = helper_pid_after_a_timeout("kill-orphan", script);
+    assert!(ends_soon(&pid), "helper {pid} still runs");
+}
+
 #[test]
 fn a_cancelled_kuna_never_starts_a_call() {
     let stop = AtomicBool::new(true);

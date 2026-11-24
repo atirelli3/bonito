@@ -595,8 +595,31 @@ fn wait(
     }
 }
 
-/// Kills and reaps `child`, then returns `error`; a kill that fails is returned instead.
+/// Kills every process in kuna's group: `detach` made kuna its leader, so its helpers are in it.
+// ponytail: the result is ignored (ESRCH = the group is gone; `Child::kill` below is the checked stop). Ceilings: a
+// helper that left the group (setsid) survives; a leader reaped long ago whose group has emptied could see its pid
+// reused: the window is the call's deadline.
+#[cfg(unix)]
+fn kill_group(child: &Child) {
+    unsafe extern "C" {
+        safe fn kill(pid: i32, signal: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    // pid 0 would be bonito's own group and pid 1 (`-1`) every process the user owns: never a child's pid.
+    if let Ok(pid) = i32::try_from(child.id())
+        && pid > 1
+    {
+        kill(-pid, SIGKILL);
+    }
+}
+
+// ponytail: no process tree on Windows yet (a job object would do it).
+#[cfg(not(unix))]
+fn kill_group(_: &Child) {}
+
+/// Kills and reaps `child` and its group, then returns `error`; a kill that fails is returned instead.
 fn stop_child(child: &mut Child, error: Error) -> Error {
+    kill_group(child);
     match child.kill() {
         Ok(()) => {
             let _ = child.wait();
