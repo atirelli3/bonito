@@ -555,9 +555,13 @@ fn detach(command: &mut Command) {
     }
 }
 
-// ponytail: not done on Windows, where a console child can open CONOUT$; DETACHED_PROCESS is the fix (#59).
-#[cfg(not(unix))]
-fn detach(_: &mut Command) {}
+/// Starts `command` with a hidden console of its own, so it cannot write into bonito's console.
+#[cfg(windows)]
+fn detach(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
 
 /// Waits until `child` has exited and `readers_done`, stopping it at the deadline, when `limits.stop` is set or
 /// once its stdout is over the cap.

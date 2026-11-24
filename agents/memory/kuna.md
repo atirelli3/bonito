@@ -66,7 +66,11 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
   closure that calls a hand-declared `safe fn setsid()` (no `libc` crate). It costs the posix_spawn fast path, which
   does not matter at one spawn per request. kuna also leads its own process group, which `stop_child` kills (#63).
   Side effect: kuna no longer gets the terminal's SIGHUP, so bonito catches SIGHUP / SIGTERM itself and cancels kuna
-  (#64). Not done on Windows: a console child inherits bonito's console and can open `CONOUT$` (#65). The
+  (#64). On Windows kuna starts with `CREATE_NO_WINDOW` (#65): a hidden console of its own, so it cannot open bonito's
+  `CONOUT$`. Not `DETACHED_PROCESS`: a console process inherits its parent's console by default and "the system creates
+  a new console when it starts a console process" (MS docs), so a helper kuna starts would open a visible window
+  (our inference from those two lines; the docs do not state it). No test can show it: only the Windows CI job runs the
+  real-kuna tests with the flag. Not a sandbox (`AttachConsole` stays possible). The
   tests prove the process group everywhere on Unix and the session id on Linux (`ps -o sid` is not portable to macOS).
 
 - [WHY] `locate(explicit, analysed)` refuses (`Error::BinaryIsKuna`) when the kuna to run is the file to analyse,
