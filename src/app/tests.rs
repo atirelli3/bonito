@@ -142,7 +142,7 @@ fn the_loop_draws_each_answer_and_stops_on_q() {
     run(&mut terminal, &mut app(), &rx).expect("runs");
     let screen = screen(&terminal);
     assert!(
-        screen.contains("hello.elf · kuna 1.1005 · functions: 1"),
+        screen.contains("functions: 1 · hello.elf · kuna 1.1005"),
         "{screen}"
     );
 }
