@@ -93,3 +93,9 @@ fact the code doesn't say.
   `test (windows-latest)`) present and no `conclusion` null (they appear a few seconds after the push).
 - [WHY] Every CI job fetches the pinned kuna first (`gate.sh` on Linux, a `bash scripts/kuna.sh` step on macOS and
   Windows): the unit tests drive the real kuna on `tests/fixtures/hello.elf` and fail, never skip, when it is missing.
+- [WHY] A macOS job can wait for a runner for ~15 minutes and end `cancelled` with no steps run: that is the runner,
+  not the change. `gh run rerun <run-id> --failed` runs only that job; never merge before all 3 checks pass.
+- [WHY] The UI needs a terminal and `main` refuses a non-terminal, so no test can start it (crossterm would fall back
+  to `/dev/tty`). `tests/smoke.rs` covers every path that ends before `try_init`; the screen itself is covered by
+  `TestBackend` tests, and a change to the live path is also run by hand on a pty (strip CSI before matching: ratatui
+  redraws only the cells that changed, so a string can arrive in pieces).
