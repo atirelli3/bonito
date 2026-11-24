@@ -14,6 +14,13 @@ fact the code doesn't say.
   one label per type; items are parent issues, atomic tasks are their sub-issues (`gh issue create --parent`).
 - [WHY] Closing keywords (`Closes #n`) fire only on merges into the default branch; anywhere else, close by hand.
 - [WHY] No `paths-ignore` in `ci.yml`: a required check that never runs blocks the PR forever.
+- [WHY] The board's Status options Todo / In Progress / Done keep their original IDs (In Review was added with
+  `updateProjectV2Field` passing the old `id`s): the built-in workflows (item added → Todo, closed/merged → Done)
+  point at those IDs.
+- [WHY] Board workflows can't be configured through the API (only `deleteProjectV2Workflow` exists): change them in
+  the board UI.
+- [WHY] The `origin` remote is HTTPS, not SSH: on the user's Mac the global SSH key logs into GitHub as another
+  account.
 
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool

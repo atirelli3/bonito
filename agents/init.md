@@ -10,8 +10,8 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
 ## Status — 2026-11-24
 - Bootstrap done: crate `tuna` 0.1.0 (hello world + `tests/smoke.rs`), workflow rules (`CLAUDE.md`), CI
   (`ci.yml`) and release (`release.yml`) pipelines, public repo `atirelli3/tuna` with a `main` ruleset, type labels,
-  Projects board **tuna** (Todo / In Progress / In Review / Done).
-- No feature code, no issues yet.
+  Projects board **tuna** https://github.com/users/atirelli3/projects/1 (Todo / In Progress / In Review / Done).
+- No feature code yet. Open: #1 `chore: add a LICENSE` (Todo, waits on the user's choice).
 
 ## Layout
 | Path | What |
@@ -40,4 +40,5 @@ gh with the `project` scope, jq.
 ## Open work / next steps
 1. First plan (Plan Mode): MVP scope and how tuna drives kuna (git dependency on its crates vs spawning `kuna`);
    then issues → board → first item branch.
-2. LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
+2. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
+3. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
