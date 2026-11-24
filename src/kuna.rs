@@ -26,6 +26,23 @@ const KUNA_ENV: &str = "BONITO_KUNA";
 const VERSION_LIMIT: usize = 64;
 /// How many characters of kuna's stderr an error message keeps.
 const STDERR_LIMIT: usize = 300;
+/// The environment variables kuna is started with, compared ASCII-uppercase (Windows names are case-blind).
+const ENV_NAMES: [&str; 12] = [
+    "PATH",
+    "HOME",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "LANG",
+    "LOCALAPPDATA",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+];
+/// Environment variable name prefixes kuna is started with.
+const ENV_PREFIXES: [&str; 2] = ["LC_", "KUNA_"];
 
 /// The kuna version this bonito was tested with: the first line of `kuna-version`.
 pub fn pinned_version() -> &'static str {
@@ -329,6 +346,9 @@ where
 {
     let output = Command::new(kuna)
         .args(args)
+        .env_clear()
+        .envs(kuna_env(env::vars_os()))
+        .current_dir(neutral_dir(env::temp_dir()))
         .output()
         .map_err(|source| Error::Spawn {
             path: kuna.to_path_buf(),
@@ -343,6 +363,39 @@ where
     let notes = clean_stderr(&output.stderr);
     let stdout = String::from_utf8(output.stdout).map_err(Error::BadOutput)?;
     Ok(Output { stdout, notes })
+}
+
+/// The variables kuna may see, with relative entries taken out of `PATH`.
+fn kuna_env(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    vars.into_iter()
+        .filter(|(name, _)| env_allowed(name))
+        .map(|(name, value)| match name.eq_ignore_ascii_case("PATH") {
+            true => (name, absolute_entries(&value)),
+            false => (name, value),
+        })
+        .collect()
+}
+
+/// `search_path` without its relative and empty entries.
+fn absolute_entries(search_path: &OsStr) -> OsString {
+    let kept = env::split_paths(search_path).filter(|dir| dir.is_absolute());
+    env::join_paths(kept).unwrap_or_default()
+}
+
+/// Where to run kuna: the temp directory, or the filesystem root when that is a relative path.
+fn neutral_dir(temp: PathBuf) -> PathBuf {
+    match temp.is_absolute() {
+        true => temp,
+        false => PathBuf::from(path::MAIN_SEPARATOR_STR),
+    }
+}
+
+/// Whether kuna may see the variable `name`.
+fn env_allowed(name: &OsStr) -> bool {
+    let Some(name) = name.to_str().map(str::to_ascii_uppercase) else {
+        return false;
+    };
+    ENV_NAMES.contains(&name.as_str()) || ENV_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
 
 /// kuna's stderr can echo text from a hostile binary: keep it short, one line, safe to print; none if empty.

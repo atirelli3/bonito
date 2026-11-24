@@ -36,6 +36,15 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
 - [WHY] `kuna functions` has no watchdog (`--max-fn-seconds` exists on `decompile*` only) and `run` has no timeout or
   output cap yet: tracked in #32.
 
+- [WHY] kuna runs with `env_clear()` plus an allowlist (`PATH HOME SYSTEMROOT TEMP TMP TMPDIR LANG LOCALAPPDATA`, four
+  `XDG_*_HOME` names, `LC_*`, `KUNA_*`) and in the temp directory (the root when `$TMPDIR` is relative), so bonito's
+  tokens and cloud keys never reach a process that parses a hostile binary. Relative and empty `PATH` entries are
+  dropped: a helper kuna spawns by name must not find a planted file in its cwd. `XDG_RUNTIME_DIR` stays out (agent
+  and keyring sockets). This is not a sandbox: `HOME` and the filesystem stay reachable. Known limits, tracked in
+  #42: the temp directory is shared (a private 0700 one, with its own `TMPDIR`, would be tighter), kuna can still
+  open `/dev/tty` and write to the terminal, and the Windows allowlist (`USERPROFILE`, `WINDIR`, `SYSTEMDRIVE`,
+  `PATHEXT`) is unverified because CI never runs kuna under it.
+
 ## kuna performance and sessions
 - [WHY] No persistent mode: `decomp_dbg` reads all of stdin before running (a batch runner, not a REPL), and there is
   no project cache. Every call reloads the image: seconds on small files, 80 s on a 147 MB one.

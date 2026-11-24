@@ -432,3 +432,88 @@ fn output_that_is_not_kuna_is_capped() {
     let error = parse_version(&"x".repeat(5000)).expect_err("not kuna");
     assert!(error.to_string().len() < 2 * STDERR_LIMIT, "{error}");
 }
+
+fn vars(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect()
+}
+
+#[test]
+fn kuna_env_keeps_only_the_allowlist() {
+    let kept = kuna_env(vars(&[
+        ("PATH", "/bin"),
+        ("Path", "C:\\Windows"),
+        ("HOME", "/home/u"),
+        ("SystemRoot", "C:\\Windows"),
+        ("Temp", "C:\\Temp"),
+        ("TMPDIR", "/tmp"),
+        ("LocalAppData", "C:\\Local"),
+        ("LC_ALL", "C"),
+        ("XDG_CACHE_HOME", "/cache"),
+        ("XDG_RUNTIME_DIR", "/run/user/1"),
+        ("KUNA_JOBS", "2"),
+        ("AWS_SECRET_ACCESS_KEY", "hunter2"),
+        ("GITHUB_TOKEN", "t"),
+        ("LCX", "not an LC_ variable"),
+    ]));
+    let names: Vec<_> = kept
+        .iter()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "PATH",
+            "Path",
+            "HOME",
+            "SystemRoot",
+            "Temp",
+            "TMPDIR",
+            "LocalAppData",
+            "LC_ALL",
+            "XDG_CACHE_HOME",
+            "KUNA_JOBS"
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn kuna_gets_a_path_without_relative_entries() {
+    let kept = kuna_env(vars(&[("PATH", ":.:/bin:rel:/usr/bin")]));
+    assert_eq!(kept, vars(&[("PATH", "/bin:/usr/bin")]));
+}
+
+#[test]
+fn a_relative_temp_directory_is_not_a_working_directory() {
+    let relative = PathBuf::from("tmp");
+    assert_eq!(
+        neutral_dir(relative),
+        PathBuf::from(path::MAIN_SEPARATOR_STR)
+    );
+    let absolute = env::temp_dir();
+    assert_eq!(neutral_dir(absolute.clone()), absolute);
+}
+
+#[cfg(unix)]
+#[test]
+fn kuna_does_not_inherit_the_environment_of_bonito() {
+    // cargo sets CARGO_MANIFEST_DIR for the test process; it is not on the allowlist.
+    assert!(env::var_os("CARGO_MANIFEST_DIR").is_some());
+    let output = run(
+        Path::new("/bin/sh"),
+        ["-c", "printf '%s' \"${CARGO_MANIFEST_DIR-unset}\""],
+    )
+    .expect("runs");
+    assert_eq!(output.stdout, "unset");
+}
+
+#[cfg(unix)]
+#[test]
+fn kuna_runs_in_the_temp_directory_not_in_the_working_directory() {
+    let output = run(Path::new("/bin/sh"), ["-c", "pwd -P"]).expect("runs");
+    let expected = env::temp_dir().canonicalize().expect("temp dir");
+    assert_eq!(Path::new(output.stdout.trim()), expected);
+}
