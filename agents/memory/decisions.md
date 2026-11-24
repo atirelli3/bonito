@@ -21,6 +21,22 @@ fact the code doesn't say.
   the board UI.
 - [WHY] The `origin` remote is HTTPS, not SSH: on the user's Mac the global SSH key logs into GitHub as another
   account.
+- [USER-YES] (2026-11-24) The project is renamed tuna → bonito (repo, crate, binary, board): `tuna` is Red Hat's IRQ
+  tool in Arch `extra` and nixpkgs (`/usr/bin/tuna`), so AUR and Nix couldn't carry it; `bonito` is free on Arch, AUR,
+  nixpkgs and crates.io. The two entries above keep the old name as history.
+
+## Product scope (v1)
+- [USER-YES] (2026-11-24) Goal: a Rust TUI with every user-facing kuna feature, interactive, vim motions throughout
+  (counts, `g`/`z`/`Ctrl-w` prefixes, `/` search, `:` commands, jumplist, marks). REA is an additional engine on by
+  default: detected on PATH, never bundled. Engine contracts live in `kuna.md`.
+- [USER-YES] (2026-11-24) bonito drives kuna by spawning its CLI (`kuna.md`, "kuna releases and pinning").
+- [USER-YES] (2026-11-24) Release targets, 6: x86_64 + aarch64 for Linux, macOS and Windows; `aarch64-pc-windows-msvc`
+  is built on `windows-11-arm` and drives kuna's x64 build under Windows' emulation.
+- [USER-YES] (2026-11-24) Install channels: `install.sh` / `install.ps1`, AUR `bonito-bin`, a Nix flake.
+- [WHY] Installers are hand-written, not cargo-dist: cargo-dist would replace our CI-gated `release.yml` and can't
+  co-install the pinned kuna. AUR and Nix wait on the LICENSE (#1) and, for AUR, an account + `AUR_SSH_PRIVATE_KEY`.
+- [WHY] ratatui `try_init` / `try_restore`, not `init` / `restore`: the latter panic, and the project rule is no panics.
+- [WHY] No clap and no async runtime: one positional + `--kuna PATH`, std threads + `mpsc` for the kuna / REA jobs.
 
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool
