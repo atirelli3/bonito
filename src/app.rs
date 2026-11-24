@@ -42,6 +42,9 @@ pub enum Msg {
         address: u64,
         answer: Result<Reply<Vec<String>>, kuna::Error>,
     },
+    /// SIGTERM or SIGHUP arrived: its name.
+    #[cfg(unix)]
+    Signal(&'static str),
 }
 
 /// A view of the function at `address`, asked of the worker.
@@ -208,7 +211,7 @@ impl App {
         self.running
     }
 
-    /// Applies one message; a terminal that can no longer be read is the only error.
+    /// Applies one message; a terminal that can no longer be read, or a signal, is an error that ends the loop.
     pub fn update(&mut self, msg: Msg) -> io::Result<()> {
         match msg {
             Msg::Input(Err(error)) => {
@@ -232,6 +235,8 @@ impl App {
                 address,
                 answer,
             } => self.answered(Request { view, address }, answer),
+            #[cfg(unix)]
+            Msg::Signal(name) => return Err(io::Error::other(format!("stopped by {name}"))),
         }
         Ok(())
     }
@@ -685,6 +690,24 @@ pub fn spawn_input(tx: Sender<Msg>) -> io::Result<JoinHandle<()>> {
             if tx.send(Msg::Input(event)).is_err() || failed {
                 break;
             }
+        }
+    })
+}
+
+/// Catches SIGTERM and SIGHUP from here on and forwards each one to the loop.
+// ponytail: never joined: it waits for signals until the process exits. It never ends on its own: a dropped
+// `Signals` would leave later signals ignored, not fatal. A repeat waits for the same cleanup (a terminal often
+// sends SIGHUP then SIGTERM); only SIGKILL cuts a hung one short.
+#[cfg(unix)]
+pub fn spawn_signals(tx: Sender<Msg>) -> io::Result<JoinHandle<()>> {
+    use signal_hook::consts::{SIGHUP, SIGTERM};
+    use signal_hook::iterator::Signals;
+    use signal_hook::low_level::signal_name;
+    let mut signals = Signals::new([SIGTERM, SIGHUP])?;
+    thread::Builder::new().spawn(move || {
+        for signal in signals.forever() {
+            // ponytail: no loop left to tell: bonito is already ending.
+            let _ = tx.send(Msg::Signal(signal_name(signal).unwrap_or("a signal")));
         }
     })
 }

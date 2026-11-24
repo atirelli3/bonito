@@ -20,9 +20,12 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
   NAME|0xADDR`, jumplist (`Ctrl-o` / `Ctrl-i`, `src/jumps.rs`), marks, and `/ ? n N * #` search in both panes. This
   is the MVP (first release candidate); `v0.1.0` is not tagged.
 - kuna hardening done (#42, PR #60): kuna runs in a private 0700 per-session directory (`src/kuna/scratch.rs`) and, on
-  Unix, in its own session (`detach`, the repo's only `unsafe`). CI pinned by SHA with Dependabot (#35, PR #61).
-- Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #59 (kill kuna's process group,
-  Windows console, SIGHUP / SIGTERM handling: needs a user decision on how to handle signals).
+  Unix, in its own session (`detach`, the repo's only `unsafe` block). CI pinned by SHA with Dependabot (#35, PR #61).
+- Shutdown hardening done (#59: #63, #64, #65): a stopped kuna call SIGKILLs kuna's process group (Unix,
+  `kill_group`); SIGTERM / SIGHUP end the loop cleanly (`signal-hook`, `app::spawn_signals`: terminal restored, kuna
+  cancelled, scratch removed); on Windows kuna starts with `CREATE_NO_WINDOW`.
+- Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #66 (kill kuna's process tree on
+  Windows: job object).
 
 ## Layout
 | Path | What |
@@ -65,8 +68,8 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
 
 ## Open work / next steps
-1. #59: ask the user how bonito should handle SIGHUP / SIGTERM (kuna no longer gets the terminal's SIGHUP since #57):
-   a hand-declared `sigaction` (more `unsafe`) or the `signal-hook` crate. Then kill kuna's process group.
+1. #66 (Windows process-tree kill) only when the user wants it: a job object needs `windows-sys` or hand-declared
+   kernel32 calls (new `unsafe`).
 2. #9 data and navigation views (plan mode first), then #10, #12, #11. `v0.1.0` only on the user's `release`.
 3. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
 4. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.

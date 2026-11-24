@@ -55,8 +55,15 @@ fact the code doesn't say.
   main-thread panic included. After `try_init`, `main` wraps ratatui's panic hook to act on the main thread only: the
   hook restores the terminal, and a worker's panic (caught and shown as an error in the status line) must not do that
   while the loop is still drawing.
-- [WHY] SIGTERM / SIGHUP are not handled yet (the terminal stays raw, kuna is orphaned until its deadline) and only
-  kuna's direct child is killed: both are tracked in #59. `require_file` is a UX pre-check, not a guard: the path is
+- [USER-YES] (2026-11-24) SIGTERM / SIGHUP end the loop through a `signal-hook` thread (`spawn_signals`, #64), not a
+  hand-declared `sigaction`: the crate is already in the tree through crossterm, so no new code is compiled and bonito
+  gets no new `unsafe`. Keep it on the `0.3` line crossterm uses (a `0.4` compiles a second copy). The loop returns
+  "stopped by SIGTERM", the terminal is restored, `Stop` cancels kuna (its process group dies, #63) and the scratch
+  directory goes. Started only right before the loop reads it, so during startup (`kuna --version`, up to 300 s) a
+  signal keeps its fatal default. Every signal is forwarded and a repeat does not kill: a terminal often sends SIGHUP
+  then SIGTERM, and a kill mid-cleanup would leave kuna and the scratch directory behind; only SIGKILL cuts a hung
+  cleanup short. A signal queued behind a quit key can still exit 0. Windows: no signals; kuna's process tree is #66.
+  `require_file` is a UX pre-check, not a guard: the path is
   opened later by kuna and a symlink can be swapped in between; kuna only ever reads it.
 
 ## Keymap (`src/keymap.rs`)

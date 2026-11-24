@@ -555,9 +555,13 @@ fn detach(command: &mut Command) {
     }
 }
 
-// ponytail: not done on Windows, where a console child can open CONOUT$; DETACHED_PROCESS is the fix (#59).
-#[cfg(not(unix))]
-fn detach(_: &mut Command) {}
+/// Starts `command` with a hidden console of its own, so it cannot write into bonito's console.
+#[cfg(windows)]
+fn detach(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
 
 /// Waits until `child` has exited and `readers_done`, stopping it at the deadline, when `limits.stop` is set or
 /// once its stdout is over the cap.
@@ -595,8 +599,31 @@ fn wait(
     }
 }
 
-/// Kills and reaps `child`, then returns `error`; a kill that fails is returned instead.
+/// Kills every process in kuna's group: `detach` made kuna its leader, so its helpers are in it.
+// ponytail: the result is ignored (ESRCH = the group is gone; `Child::kill` below is the checked stop). Ceilings: a
+// helper that left the group (setsid) survives; a leader reaped long ago whose group has emptied could see its pid
+// reused: the window is the call's deadline.
+#[cfg(unix)]
+fn kill_group(child: &Child) {
+    unsafe extern "C" {
+        safe fn kill(pid: i32, signal: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    // pid 0 would be bonito's own group and pid 1 (`-1`) every process the user owns: never a child's pid.
+    if let Ok(pid) = i32::try_from(child.id())
+        && pid > 1
+    {
+        kill(-pid, SIGKILL);
+    }
+}
+
+// ponytail: no process tree on Windows yet (a job object would do it).
+#[cfg(not(unix))]
+fn kill_group(_: &Child) {}
+
+/// Kills and reaps `child` and its group, then returns `error`; a kill that fails is returned instead.
 fn stop_child(child: &mut Child, error: Error) -> Error {
+    kill_group(child);
     match child.kill() {
         Ok(()) => {
             let _ = child.wait();
