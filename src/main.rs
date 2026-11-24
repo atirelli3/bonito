@@ -71,11 +71,14 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
         kuna.version_warning(),
     );
     let (tx, rx) = mpsc::channel();
-    let worker = app::spawn_functions(Arc::clone(&kuna), binary, tx.clone())?;
+    let (requests, queue) = mpsc::channel();
+    let worker = app::spawn_worker(Arc::clone(&kuna), binary, queue, tx.clone())?;
     let _stop = Stop {
         kuna,
         worker: Some(worker),
     };
+    // ponytail: #51 moves this into `App`; the worker ends on `Kuna::cancel` either way.
+    let _requests = requests;
     interact(&mut app, tx, &rx)
 }
 
