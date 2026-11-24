@@ -55,6 +55,16 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
   Unix only: on Windows the directory takes the temp directory's ACL, so it is private only while `%TEMP%` is
   per-user (the default). A directory that cannot be removed on drop is named on stderr (bonito has given the
   terminal back by then); a crash, SIGKILL or SIGTERM of bonito leaves it behind (#59).
+- [USER-YES] (2026-11-24) On Unix kuna starts in a session of its own (`detach` in `src/kuna.rs`), so it has no
+  controlling terminal: `/dev/tty` fails (ENXIO) and `TIOCSTI` keystroke injection into bonito's input is closed.
+  kuna (same user) can still write to the terminal's device file by path, so this is not a sandbox. std's
+  `CommandExt::setsid` is still nightly (rust-lang/rust#105376), so this is the repo's only `unsafe`: a `pre_exec`
+  closure that calls a hand-declared `safe fn setsid()` (no `libc` crate). It costs the posix_spawn fast path, which
+  does not matter at one spawn per request. kuna also leads its own process group now, which #59 will use to kill
+  its helpers. Side effect: kuna no longer gets the terminal's SIGHUP, so if the terminal closes it runs on until
+  its own deadline (#59, with the unhandled SIGTERM / SIGHUP of bonito itself). Not done on Windows: a console
+  child inherits bonito's console and can open `CONOUT$`; `creation_flags(DETACHED_PROCESS)` is the fix (#59). The
+  tests prove the process group everywhere on Unix and the session id on Linux (`ps -o sid` is not portable to macOS).
 
 - [WHY] `locate(explicit, analysed)` refuses (`Error::BinaryIsKuna`) when the kuna to run is the file to analyse,
   comparing canonical paths, **before** the `--version` probe: the probe runs the file, so `bonito --kuna X X` would

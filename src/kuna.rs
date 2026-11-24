@@ -473,7 +473,8 @@ where
     if limits.stop.load(Ordering::Relaxed) {
         return Err(Error::Cancelled);
     }
-    let mut child = Command::new(kuna)
+    let mut command = Command::new(kuna);
+    command
         .args(args)
         .env_clear()
         .envs(kuna_env(env::vars_os()))
@@ -483,20 +484,20 @@ where
         .current_dir(limits.dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| {
-            match source.kind() == io::ErrorKind::NotFound && !limits.dir.is_dir() {
-                true => Error::Scratch {
-                    dir: limits.dir.to_path_buf(),
-                    source,
-                },
-                false => Error::Spawn {
-                    path: kuna.to_path_buf(),
-                    source,
-                },
-            }
-        })?;
+        .stderr(Stdio::piped());
+    detach(&mut command);
+    let mut child = command.spawn().map_err(|source| {
+        match source.kind() == io::ErrorKind::NotFound && !limits.dir.is_dir() {
+            true => Error::Scratch {
+                dir: limits.dir.to_path_buf(),
+                source,
+            },
+            false => Error::Spawn {
+                path: kuna.to_path_buf(),
+                source,
+            },
+        }
+    })?;
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(stop_child(&mut child, control("no output pipe")));
     };
@@ -537,6 +538,26 @@ where
     let stdout = String::from_utf8(stdout).map_err(Error::BadOutput)?;
     Ok(Output { stdout, notes })
 }
+
+/// Starts `command` in a session of its own, with no controlling terminal.
+#[cfg(unix)]
+fn detach(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe extern "C" {
+        safe fn setsid() -> i32;
+    }
+    // SAFETY: the closure only calls `setsid`, which is async-signal-safe, so it may run between fork and exec.
+    unsafe {
+        command.pre_exec(|| match setsid() {
+            -1 => Err(io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+}
+
+// ponytail: not done on Windows, where a console child can open CONOUT$; DETACHED_PROCESS is the fix (#59).
+#[cfg(not(unix))]
+fn detach(_: &mut Command) {}
 
 /// Waits until `child` has exited and `readers_done`, stopping it at the deadline, when `limits.stop` is set or
 /// once its stdout is over the cap.

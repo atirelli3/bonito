@@ -625,6 +625,28 @@ fn kuna_runs_in_the_scratch_directory_and_gets_it_as_its_temp_directory() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn kuna_leads_its_own_process_group() {
+    let script = "echo $$; ps -o pgid= -p $$";
+    let output = run_plain(Path::new("/bin/sh"), ["-c", script]).expect("runs");
+    let mut words = output.stdout.split_whitespace();
+    let (pid, group) = (words.next(), words.next());
+    assert!(pid.is_some(), "{:?}", output.stdout);
+    assert_eq!(pid, group, "{:?}", output.stdout);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn kuna_leads_its_own_session_so_it_has_no_terminal_to_write_to() {
+    let script = "echo $$; ps -o sid= -p $$";
+    let output = run_plain(Path::new("/bin/sh"), ["-c", script]).expect("runs");
+    let mut words = output.stdout.split_whitespace();
+    let (pid, session) = (words.next(), words.next());
+    assert!(pid.is_some(), "{:?}", output.stdout);
+    assert_eq!(pid, session, "{:?}", output.stdout);
+}
+
 /// Limits with a working directory that always exists, for tests that do not look at it.
 fn limits(stop: &AtomicBool) -> Limits<'_> {
     Limits::new(stop, Path::new("."))
