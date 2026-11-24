@@ -1,0 +1,91 @@
+{
+  "binary": "tests/fixtures/hello.elf",
+  "kind": "code",
+  "target": {
+    "name": "main",
+    "address": 2101568,
+    "address_hex": "0x201140"
+  },
+  "start": 2101568,
+  "start_hex": "0x201140",
+  "end": 2101600,
+  "end_hex": "0x201160",
+  "count": 8,
+  "bytes": 32,
+  "truncated": false,
+  "notes": [],
+  "instructions": [
+    {
+      "address": 2101568,
+      "address_hex": "0x201140",
+      "size": 1,
+      "bytes": "50",
+      "mnemonic": "PUSH",
+      "operands": "RAX",
+      "text": "PUSH RAX"
+    },
+    {
+      "address": 2101569,
+      "address_hex": "0x201141",
+      "size": 5,
+      "bytes": "bf03000000",
+      "mnemonic": "MOV",
+      "operands": "EDI,0x3",
+      "text": "MOV EDI,0x3"
+    },
+    {
+      "address": 2101574,
+      "address_hex": "0x201146",
+      "size": 5,
+      "bytes": "e8d5ffffff",
+      "mnemonic": "CALL",
+      "operands": "0x201120",
+      "text": "CALL 0x201120"
+    },
+    {
+      "address": 2101579,
+      "address_hex": "0x20114b",
+      "size": 2,
+      "bytes": "89c7",
+      "mnemonic": "MOV",
+      "operands": "EDI,EAX",
+      "text": "MOV EDI,EAX"
+    },
+    {
+      "address": 2101581,
+      "address_hex": "0x20114d",
+      "size": 5,
+      "bytes": "be04000000",
+      "mnemonic": "MOV",
+      "operands": "ESI,0x4",
+      "text": "MOV ESI,0x4"
+    },
+    {
+      "address": 2101586,
+      "address_hex": "0x201152",
+      "size": 1,
+      "bytes": "58",
+      "mnemonic": "POP",
+      "operands": "RAX",
+      "text": "POP RAX"
+    },
+    {
+      "address": 2101587,
+      "address_hex": "0x201153",
+      "size": 5,
+      "bytes": "e9d8ffffff",
+      "mnemonic": "JMP",
+      "operands": "0x201130",
+      "text": "JMP 0x201130"
+    },
+    {
+      "address": 2101592,
+      "address_hex": "0x201158",
+      "size": 8,
+      "bytes": "0f1f840000000000",
+      "mnemonic": "NOP",
+      "operands": "dword ptr [RAX + RAX*0x1]",
+      "text": "NOP dword ptr [RAX + RAX*0x1]"
+    }
+  ]
+}

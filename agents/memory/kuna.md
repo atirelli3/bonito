@@ -18,6 +18,24 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
 - [WHY] Only `decompile-graph` and `.streaming` carry a schema version. Parse leniently (ignore unknown fields,
   `Option` for optional ones) and warn when `kuna --version` differs from `kuna-version`.
 
+## Driving kuna safely (src/kuna.rs)
+- [WHY] The analysed binary is only ever an argument to kuna, never the program, and always an absolute path (a
+  relative `-x` could be read as a flag). bonito sends addresses as selectors (`0x201140 --addr`), never a name taken
+  from the binary.
+- [WHY] Everything kuna prints that traces back to the binary (names, aliases, messages, mnemonics, C text, stderr) is
+  attacker-controlled: it is cleaned as it is parsed (`Text` / `Code` in `src/kuna/text.rs`, `printable` for stderr):
+  control characters and bidi overrides become spaces, names and messages are capped. Never add a string field to the
+  JSON types as a plain `String`.
+- [WHY] kuna exits 0 and prints loader repairs on stderr ("ELF section table unusable"): the answer is degraded.
+  `Reply.notes` carries that stderr; the UI must show it. A mid-function address also decompiles with a note, and
+  `disassemble` of one has `target.name == None`.
+- [WHY] Parsing is strict on the keys bonito relies on (`functions`, `size`, `warnings`, `instructions`, `truncated`):
+  a kuna that renames one must fail loudly, not read as "0 functions". Unknown keys are ignored.
+- [WHY] Executable lookup: `--kuna` / `BONITO_KUNA` must exist or it is an error; `PATH` entries that are relative
+  are skipped (a `kuna` in a sample directory must never run) and non-executable files are skipped.
+- [WHY] `kuna functions` has no watchdog (`--max-fn-seconds` exists on `decompile*` only) and `run` has no timeout or
+  output cap yet: tracked in #32.
+
 ## kuna performance and sessions
 - [WHY] No persistent mode: `decomp_dbg` reads all of stdin before running (a batch runner, not a REPL), and there is
   no project cache. Every call reloads the image: seconds on small files, 80 s on a 147 MB one.
@@ -31,6 +49,13 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
 - [WHY] Releases are nightly tags `v1.NNNN` with `kuna-vX-{linux-x86_64,linux-arm64,macos-arm64,macos-x86_64}.tar.gz`
   and `kuna-vX-windows-x86_64.zip`; no checksum file (GitHub's per-asset `digest` has the sha256). No Windows-ARM
   build: bonito runs the x64 one there under emulation.
+- [WHY] `kuna-version` = the tested version on line 1, then one `<platform> <sha256>` per platform. `scripts/kuna.sh`
+  verifies the download against those pinned sums, never against the digest GitHub reports next to the asset: that
+  one would change with a re-uploaded asset. It uses `curl` (public release), so CI needs no token. It skips the
+  cached `target/kuna` when `CI` is set. To bump: change line 1 and refresh the sums with
+  `gh api repos/Noelo-Lab/kuna/releases/tags/vX --jq '.assets[] | "\(.name) \(.digest)"'`, then run the gate.
+- [WHY] Git Bash's `tar` is GNU tar and can't read `.zip`: on Windows `kuna.sh` calls the system bsdtar
+  (`%SYSTEMROOT%\System32\tar.exe`). The Windows path is only exercised by CI's `test (windows-latest)`.
 - [WHY] AUR already ships `kuna-bin` (provides `kuna`); nixpkgs has no kuna.
 
 ## REA

@@ -1,0 +1,83 @@
+{
+  "binary": "tests/fixtures/hello.elf",
+  "language": "c-language",
+  "count": 1,
+  "error": null,
+  "functions": [
+    {
+      "name": "main",
+      "address": 2101568,
+      "address_hex": "0x201140",
+      "aliases": [
+        "sub_201140"
+      ],
+      "object_location": null,
+      "size": 32,
+      "code": "int main(void)\n{\n  unsigned int v1; // eax\n  \n  v1 = square(3);\n  return add(v1,4); // tail-call\n}",
+      "error": null,
+      "unstructured_gotos": 0,
+      "warnings": [
+        {
+          "kind": "tail-call",
+          "message": "tailcalljump: recovered tail call -> introduced call to 0x00201130",
+          "line": 6,
+          "address": 2101587
+        }
+      ],
+      "line_mappings": [
+        {
+          "line_number": 5,
+          "addresses": [
+            2101574
+          ]
+        },
+        {
+          "line_number": 6,
+          "addresses": [
+            2101587
+          ]
+        }
+      ],
+      "variables": [
+        {
+          "name": "local_10",
+          "type": "undefined8",
+          "kind": "stack",
+          "arg_index": null,
+          "stack_offset": -16,
+          "size": 8,
+          "line_numbers": [],
+          "addresses": []
+        },
+        {
+          "name": "local_8",
+          "type": "undefined8",
+          "kind": "stack",
+          "arg_index": null,
+          "stack_offset": -8,
+          "size": 8,
+          "line_numbers": [],
+          "addresses": []
+        },
+        {
+          "name": "v1",
+          "type": "unsigned int",
+          "kind": "register",
+          "arg_index": null,
+          "stack_offset": null,
+          "size": 4,
+          "line_numbers": [
+            5,
+            6
+          ],
+          "addresses": [
+            2101574,
+            2101587
+          ]
+        }
+      ],
+      "types": []
+    }
+  ],
+  "assertions": []
+}
