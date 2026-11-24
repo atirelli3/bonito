@@ -1,6 +1,4 @@
 //! The kuna driver: finds the `kuna` binary, checks its version and runs it.
-// ponytail: the TUI uses `functions` only; `decompile` and `disassemble` wait for the views of #8.
-#![allow(dead_code)]
 
 use serde::de::DeserializeOwned;
 use std::ffi::{OsStr, OsString};
@@ -255,6 +253,11 @@ impl Kuna {
     /// Stops every call in flight, and any later one: use it when bonito quits.
     pub fn cancel(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether `cancel` was called.
+    pub fn is_cancelled(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
     }
 
     /// The version kuna reported.

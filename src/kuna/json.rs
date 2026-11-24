@@ -1,5 +1,7 @@
 //! Typed views of the JSON kuna prints: unknown fields are ignored, the fields bonito relies on are required,
 //! and text that comes from the analysed binary is cleaned as it is parsed.
+// ponytail: the fields are kuna's contract; the views of #51, #52 and #9 read them as they land.
+#![allow(dead_code)]
 
 use super::text::{Code, Text};
 use serde::Deserialize;

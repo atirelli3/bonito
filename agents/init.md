@@ -14,16 +14,18 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
 - Renamed tuna → bonito (#3). v1 plan approved 2026-11-24; its items are on the board (below). Design recorded (#4).
 - kuna driver done (#5, #32, #33): bonito finds, version-checks and drives the pinned kuna (`functions`, `decompile`,
   `disassemble` by address) with a cleared environment, a deadline, an output cap and cancellation.
-- TUI shell done (#6): `bonito [--kuna PATH] <binary>` shows the function list, a code pane placeholder and a status
-  area; `q` / `ZZ` / `:q` quit. Vim keymap done (#7): counts, prefixes, marks, `:` `/` `?` prompts with history; the
-  motions, searches and views it emits are not acted on yet (#8).
+- TUI shell done (#6): `bonito [--kuna PATH] <binary>` shows the function list, a code pane and a status area;
+  `q` / `ZZ` / `:q` quit. Vim keymap done (#7): counts, prefixes, marks, `:` `/` `?` prompts with history.
+- Core views (#8, branch `feat/8-core-views`, no PR yet): tasks done and In Review: #49 worker, #50 `Pane` cursor,
+  #51 views, #54 worker moved to `src/worker.rs`, #52 follow call (Enter), `:e NAME|0xADDR`, jumplist (`Ctrl-o` /
+  `Ctrl-i`, `src/jumps.rs`) and marks. Still to do: #53 searches (`/ ? n N * #`).
 - Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #35 (pin Actions by SHA); #42
   (private cwd, process-group kill, signals).
 
 ## Layout
 | Path | What |
 |---|---|
-| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, event loop, workers; `ui.rs` drawing; `keymap.rs` the pure vim keymap; `kuna.rs` (+ `kuna/json.rs`, `text.rs`, `tests.rs`) the kuna driver |
+| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `jumps.rs` the pure jumplist; `kuna.rs` (+ `kuna/json.rs`, `text.rs`, `tests.rs`) the kuna driver |
 | `tests/` | `smoke.rs` drives the built binary through every path that ends before the terminal is taken over; `fixtures/` = `hello.elf` (+ `hello.c`) and recorded kuna JSON |
 | `kuna-version` | the tested kuna version (line 1) + a sha256 per platform |
 | `scripts/gate.sh` | push gate = CI `gate` job: fetches kuna, then fmt, clippy, tests + coverage ≥ 80% |
@@ -54,16 +56,16 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | #3 | rename → bonito (done) |
 | #4 | record the v1 design (done) |
 | #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` (done) |
-| #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**) |
+| #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**; tasks #49–#52 and #54 done, #53 to do) |
 | #9 | xrefs, strings, crypto, blobs, hex, p-code, summary · #10 options (`catalog`, `:set`, `:mode`) |
 | #11 | whole-binary cache (`decompile-project --stream`) · #12 call graph · #13 unpack + FID |
 | #14 | REA engine (static-only allow-list) · #15 visual mode + OSC 52 yank |
 | #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
 
 ## Open work / next steps
-1. #8 core views = MVP (first release candidate): selection and scrolling, `:e`, `/` filter, decompile and
-   disassembly views, follow call, jumplist; it acts on the keymap's actions. Then #42, #35, #9, #10, #12.
-   `v0.1.0` only on the user's `release`.
+1. #8 core views = MVP (first release candidate), on `feat/8-core-views`: do #53 (`/ ? n N * #` in both panes; drop
+   the `keymap.rs` and `view.rs` dead-code allows), then open the PR (`Closes #8, #49 … #54`). Then #42, #35, #9, #10,
+   #12. `v0.1.0` only on the user's `release`.
 2. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
 3. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
 4. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).

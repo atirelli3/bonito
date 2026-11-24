@@ -1,6 +1,4 @@
 //! The vim keymap: keys in, actions out. No I/O and no terminal: the app applies the actions.
-// ponytail: the views of #8-#15 consume these actions; until then the app acts on `Quit` and the prompts only.
-#![allow(dead_code)]
 
 use crate::kuna::is_unsafe;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -48,7 +46,7 @@ pub enum Pane {
 }
 
 /// The views a `g` key opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum View {
     Decompile,
     Disassembly,

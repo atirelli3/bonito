@@ -2,9 +2,12 @@
 
 mod app;
 mod args;
+mod jumps;
 mod keymap;
 mod kuna;
 mod ui;
+mod view;
+mod worker;
 
 use app::App;
 use args::Command;
@@ -65,17 +68,16 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     require_file(&binary)?;
     let kuna = Arc::new(kuna::locate(explicit_kuna.as_deref(), &binary)?);
     require_terminal()?;
-    let mut app = App::new(
-        binary.clone(),
-        kuna.version().to_string(),
-        kuna.version_warning(),
-    );
     let (tx, rx) = mpsc::channel();
-    let worker = app::spawn_functions(Arc::clone(&kuna), binary, tx.clone())?;
+    let (requests, queue) = mpsc::channel();
+    let worker = worker::spawn(Arc::clone(&kuna), binary.clone(), queue, tx.clone())?;
+    let (version, warning) = (kuna.version().to_string(), kuna.version_warning());
     let _stop = Stop {
         kuna,
         worker: Some(worker),
     };
+    // ponytail: the worker ends on `Kuna::cancel`, whatever order these drop in.
+    let mut app = App::new(binary, version, warning, requests);
     interact(&mut app, tx, &rx)
 }
 
