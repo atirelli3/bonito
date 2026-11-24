@@ -50,6 +50,11 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
   open `/dev/tty` and write to the terminal, and the Windows allowlist (`USERPROFILE`, `WINDIR`, `SYSTEMDRIVE`,
   `PATHEXT`) is unverified because CI never runs kuna under it.
 
+- [WHY] `locate(explicit, analysed)` refuses (`Error::BinaryIsKuna`) when the kuna to run is the file to analyse,
+  comparing canonical paths, **before** the `--version` probe: the probe runs the file, so `bonito --kuna X X` would
+  have executed the sample. A hard link or a copy is not caught. Every path printed in a `kuna::Error` is `{:?}`
+  (escaped): `--kuna` and `BONITO_KUNA` are typed by the user but may come from a wrapper script.
+
 ## kuna performance and sessions
 - [WHY] No persistent mode: `decomp_dbg` reads all of stdin before running (a batch runner, not a REPL), and there is
   no project cache. Every call reloads the image: seconds on small files, 80 s on a 147 MB one.

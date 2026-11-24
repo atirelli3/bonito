@@ -1,6 +1,4 @@
 //! The application state, its workers and the event loop.
-// ponytail: main wires this up in the CLI task (#41); until then only the tests call it.
-#![allow(dead_code)]
 
 use crate::kuna::{self, Function, Kuna, Reply};
 use crate::ui;

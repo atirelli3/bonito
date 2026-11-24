@@ -172,7 +172,8 @@ fn pinned_kuna() -> Kuna {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target/kuna")
         .join(exe);
-    kuna::locate(Some(&path)).expect("the pinned kuna (scripts/kuna.sh)")
+    let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.elf");
+    kuna::locate(Some(&path), &sample).expect("the pinned kuna (scripts/kuna.sh)")
 }
 
 #[test]

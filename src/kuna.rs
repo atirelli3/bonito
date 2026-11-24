@@ -1,5 +1,5 @@
 //! The kuna driver: finds the `kuna` binary, checks its version and runs it.
-// ponytail: the TUI calls this from item #6 on; until then only the tests do.
+// ponytail: the TUI uses `functions` only; `decompile` and `disassemble` wait for the views of #8.
 #![allow(dead_code)]
 
 use serde::de::DeserializeOwned;
@@ -82,6 +82,8 @@ pub enum Error {
     },
     /// The binary exists but could not be started.
     Spawn { path: PathBuf, source: io::Error },
+    /// The kuna to run is the file to analyse, which bonito never runs.
+    BinaryIsKuna(PathBuf),
     /// kuna ran and exited with an error; `stderr` is what it said, made safe to print.
     Failed { code: Option<i32>, stderr: String },
     /// kuna's output was not valid UTF-8.
@@ -115,8 +117,12 @@ impl fmt::Display for Error {
                 origin,
                 path,
                 reason,
-            } => write!(f, "{origin} {}: {reason}", path.display()),
-            Self::Spawn { path, source } => write!(f, "cannot start {}: {source}", path.display()),
+            } => write!(f, "{origin} {path:?}: {reason}"),
+            Self::Spawn { path, source } => write!(f, "cannot start {path:?}: {source}"),
+            Self::BinaryIsKuna(path) => write!(
+                f,
+                "{path:?} is both the kuna to run and the file to analyse: bonito never runs the analysed file"
+            ),
             Self::Failed {
                 code: Some(code),
                 stderr,
@@ -163,6 +169,7 @@ impl std::error::Error for Error {
             Self::Parse(source) => Some(source),
             Self::NotOnPath
             | Self::BadPath { .. }
+            | Self::BinaryIsKuna(_)
             | Self::Failed { .. }
             | Self::NotKuna(_)
             | Self::TimedOut(_)
@@ -208,7 +215,8 @@ struct Output {
 }
 
 /// Finds kuna (`--kuna`, then `$BONITO_KUNA`, then `PATH`) and asks it for its version.
-pub fn locate(explicit: Option<&Path>) -> Result<Kuna, Error> {
+/// Refuses before running anything when that file is `analysed`: the file to analyse is never run.
+pub fn locate(explicit: Option<&Path>, analysed: &Path) -> Result<Kuna, Error> {
     // ponytail: an empty BONITO_KUNA counts as unset.
     let from_env = env::var_os(KUNA_ENV).filter(|value| !value.is_empty());
     let path = resolve(
@@ -216,7 +224,16 @@ pub fn locate(explicit: Option<&Path>) -> Result<Kuna, Error> {
         from_env.as_deref(),
         env::var_os("PATH").as_deref(),
     )?;
+    if same_file(&path, analysed) {
+        return Err(Error::BinaryIsKuna(path));
+    }
     Kuna::probe(path)
+}
+
+/// Whether `a` and `b` name the same file once symlinks are resolved.
+// ponytail: a hard link or a copy is not caught; compare device and inode if that ever matters.
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 impl Kuna {

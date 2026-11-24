@@ -171,9 +171,51 @@ fn pinned_version_is_the_first_line_of_kuna_version() {
 
 #[test]
 fn locates_the_real_pinned_kuna() {
-    let kuna = locate(Some(&pinned_kuna_path())).expect("run scripts/kuna.sh first");
+    let kuna = locate(Some(&pinned_kuna_path()), &fixture("hello.elf"))
+        .expect("run scripts/kuna.sh first");
     assert_eq!(kuna.version(), pinned_version());
     assert_eq!(kuna.version_warning(), None);
+}
+
+#[test]
+fn the_file_to_analyse_is_never_run_as_kuna() {
+    // Not executable: if locate tried to run it, the error would be `Spawn`, not `BinaryIsKuna`.
+    let dir = TempDir::new("is-kuna");
+    let sample = dir.touch("sample");
+    let result = locate(Some(&sample), &sample);
+    assert!(matches!(result, Err(Error::BinaryIsKuna(_))), "{result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_the_file_to_analyse_is_never_run_as_kuna() {
+    let dir = TempDir::new("is-kuna-link");
+    let sample = dir.touch("sample");
+    let link = dir.0.join("kuna");
+    std::os::unix::fs::symlink(&sample, &link).expect("symlink");
+    let result = locate(Some(&link), &sample);
+    assert!(matches!(result, Err(Error::BinaryIsKuna(_))), "{result:?}");
+}
+
+#[test]
+fn paths_in_errors_are_escaped() {
+    let path = PathBuf::from("/no/\u{1b}]0;x\u{7}\u{202e}");
+    let bad = Error::BadPath {
+        origin: "--kuna",
+        path: path.clone(),
+        reason: "gone".to_string(),
+    };
+    let spawn = Error::Spawn {
+        path: path.clone(),
+        source: io::Error::other("no"),
+    };
+    let same = Error::BinaryIsKuna(path);
+    for message in [bad.to_string(), spawn.to_string(), same.to_string()] {
+        assert!(
+            !message.contains(['\u{1b}', '\u{7}', '\u{202e}']),
+            "{message:?}"
+        );
+    }
 }
 
 fn pinned_kuna_path() -> PathBuf {
@@ -249,7 +291,7 @@ fn printable_truncates_and_names_an_empty_message() {
 }
 
 fn real_kuna() -> Kuna {
-    locate(Some(&pinned_kuna_path())).expect("run scripts/kuna.sh first")
+    locate(Some(&pinned_kuna_path()), &fixture("hello.elf")).expect("run scripts/kuna.sh first")
 }
 
 fn fixture(name: &str) -> PathBuf {
