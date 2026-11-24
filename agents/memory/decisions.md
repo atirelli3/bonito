@@ -40,11 +40,23 @@ fact the code doesn't say.
   co-install the pinned kuna. AUR and Nix wait on the LICENSE (#1) and, for AUR, an account + `AUR_SSH_PRIVATE_KEY`.
 - [WHY] ratatui `try_init` / `try_restore`, not `init` / `restore`: the latter panic, and the project rule is no panics.
 - [WHY] No clap and no async runtime: one positional + `--kuna PATH`, std threads + `mpsc` for the kuna / REA jobs.
-- [WHY] `src/kuna.rs` carries `#![allow(dead_code)]` (a `// ponytail:` marker) until #6 calls it: remove it then.
+- [WHY] `src/kuna.rs` carries `#![allow(dead_code)]` (a `// ponytail:` marker) until #8 calls `decompile` and
+  `disassemble` (the TUI of #6 only uses `functions`): remove it then.
   `#[expect]` would fail the test build (the lint doesn't fire there), and under `-D warnings` an unused `pub use`
   is an error: re-export a type only when something names it.
 - [WHY] Unit tests that need a child process run `/bin/sh -c '…'` (Unix only), never a script file they just wrote:
   write-then-exec races with other test threads' fork (ETXTBSY).
+
+- [WHY] `main` checks stdin and stdout are terminals before it spawns anything: crossterm falls back to `/dev/tty`
+  when stdin is not a terminal, so a script or a test with piped stdio would start the UI on the user's own terminal.
+  The smoke tests rely on it: each ends before `try_init`.
+- [WHY] `open` holds a `Stop` guard (`kuna.cancel()` + join the worker) so kuna is stopped on every exit, a
+  main-thread panic included. After `try_init`, `main` wraps ratatui's panic hook to act on the main thread only: the
+  hook restores the terminal, and a worker's panic (caught and shown as an error in the status line) must not do that
+  while the loop is still drawing.
+- [WHY] SIGTERM / SIGHUP are not handled yet (the terminal stays raw, kuna is orphaned until its deadline) and only
+  kuna's direct child is killed: both are tracked in #42. `require_file` is a UX pre-check, not a guard: the path is
+  opened later by kuna and a symlink can be swapped in between; kuna only ever reads it.
 
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool

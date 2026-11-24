@@ -1,5 +1,6 @@
 //! Unit tests for the kuna driver.
 use super::*;
+use std::thread;
 
 /// A temp directory that removes itself.
 struct TempDir(PathBuf);
@@ -147,10 +148,12 @@ fn warns_only_when_the_version_differs_from_the_pinned_one() {
     let same = Kuna {
         path: PathBuf::from("kuna"),
         version: pinned_version().to_string(),
+        stop: AtomicBool::new(false),
     };
     let other = Kuna {
         path: PathBuf::from("kuna"),
         version: "0.0.1".to_string(),
+        stop: AtomicBool::new(false),
     };
     assert_eq!(same.version_warning(), None);
     assert!(other.version_warning().expect("warns").contains("0.0.1"));
@@ -168,9 +171,51 @@ fn pinned_version_is_the_first_line_of_kuna_version() {
 
 #[test]
 fn locates_the_real_pinned_kuna() {
-    let kuna = locate(Some(&pinned_kuna_path())).expect("run scripts/kuna.sh first");
+    let kuna = locate(Some(&pinned_kuna_path()), &fixture("hello.elf"))
+        .expect("run scripts/kuna.sh first");
     assert_eq!(kuna.version(), pinned_version());
     assert_eq!(kuna.version_warning(), None);
+}
+
+#[test]
+fn the_file_to_analyse_is_never_run_as_kuna() {
+    // Not executable: if locate tried to run it, the error would be `Spawn`, not `BinaryIsKuna`.
+    let dir = TempDir::new("is-kuna");
+    let sample = dir.touch("sample");
+    let result = locate(Some(&sample), &sample);
+    assert!(matches!(result, Err(Error::BinaryIsKuna(_))), "{result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_the_file_to_analyse_is_never_run_as_kuna() {
+    let dir = TempDir::new("is-kuna-link");
+    let sample = dir.touch("sample");
+    let link = dir.0.join("kuna");
+    std::os::unix::fs::symlink(&sample, &link).expect("symlink");
+    let result = locate(Some(&link), &sample);
+    assert!(matches!(result, Err(Error::BinaryIsKuna(_))), "{result:?}");
+}
+
+#[test]
+fn paths_in_errors_are_escaped() {
+    let path = PathBuf::from("/no/\u{1b}]0;x\u{7}\u{202e}");
+    let bad = Error::BadPath {
+        origin: "--kuna",
+        path: path.clone(),
+        reason: "gone".to_string(),
+    };
+    let spawn = Error::Spawn {
+        path: path.clone(),
+        source: io::Error::other("no"),
+    };
+    let same = Error::BinaryIsKuna(path);
+    for message in [bad.to_string(), spawn.to_string(), same.to_string()] {
+        assert!(
+            !message.contains(['\u{1b}', '\u{7}', '\u{202e}']),
+            "{message:?}"
+        );
+    }
 }
 
 fn pinned_kuna_path() -> PathBuf {
@@ -181,14 +226,15 @@ fn pinned_kuna_path() -> PathBuf {
 
 #[test]
 fn run_reports_a_program_that_cannot_start() {
-    let result = run(Path::new("/definitely/not/here/kuna"), ["--version"]);
+    let result = run_plain(Path::new("/definitely/not/here/kuna"), ["--version"]);
     assert!(matches!(result, Err(Error::Spawn { .. })));
 }
 
 #[cfg(unix)]
 #[test]
 fn run_reports_a_failing_exit_with_its_stderr() {
-    let error = run(Path::new("/bin/sh"), ["-c", "echo boom >&2; exit 3"]).expect_err("fails");
+    let error =
+        run_plain(Path::new("/bin/sh"), ["-c", "echo boom >&2; exit 3"]).expect_err("fails");
     assert!(
         matches!(&error, Error::Failed { code: Some(3), stderr } if stderr == "boom"),
         "{error:?}"
@@ -198,21 +244,21 @@ fn run_reports_a_failing_exit_with_its_stderr() {
 #[cfg(unix)]
 #[test]
 fn run_reports_output_that_is_not_utf8() {
-    let result = run(Path::new("/bin/sh"), ["-c", "printf '\\377'"]);
+    let result = run_plain(Path::new("/bin/sh"), ["-c", "printf '\\377'"]);
     assert!(matches!(result, Err(Error::BadOutput(_))));
 }
 
 #[cfg(unix)]
 #[test]
 fn run_returns_stdout_and_no_note_on_a_quiet_success() {
-    let output = run(Path::new("/bin/sh"), ["-c", "printf hello"]).expect("runs");
+    let output = run_plain(Path::new("/bin/sh"), ["-c", "printf hello"]).expect("runs");
     assert_eq!((output.stdout.as_str(), output.notes), ("hello", None));
 }
 
 #[cfg(unix)]
 #[test]
 fn run_keeps_what_kuna_says_on_stderr_when_it_still_succeeds() {
-    let output = run(
+    let output = run_plain(
         Path::new("/bin/sh"),
         ["-c", "printf out; echo '[kuna] repaired' >&2"],
     )
@@ -245,7 +291,7 @@ fn printable_truncates_and_names_an_empty_message() {
 }
 
 fn real_kuna() -> Kuna {
-    locate(Some(&pinned_kuna_path())).expect("run scripts/kuna.sh first")
+    locate(Some(&pinned_kuna_path()), &fixture("hello.elf")).expect("run scripts/kuna.sh first")
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -431,4 +477,212 @@ fn a_version_from_kuna_is_cleaned() {
 fn output_that_is_not_kuna_is_capped() {
     let error = parse_version(&"x".repeat(5000)).expect_err("not kuna");
     assert!(error.to_string().len() < 2 * STDERR_LIMIT, "{error}");
+}
+
+fn vars(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect()
+}
+
+#[test]
+fn kuna_env_keeps_only_the_allowlist() {
+    let kept = kuna_env(vars(&[
+        ("PATH", "/bin"),
+        ("Path", "C:\\Windows"),
+        ("HOME", "/home/u"),
+        ("SystemRoot", "C:\\Windows"),
+        ("Temp", "C:\\Temp"),
+        ("TMPDIR", "/tmp"),
+        ("LocalAppData", "C:\\Local"),
+        ("LC_ALL", "C"),
+        ("XDG_CACHE_HOME", "/cache"),
+        ("XDG_RUNTIME_DIR", "/run/user/1"),
+        ("KUNA_JOBS", "2"),
+        ("AWS_SECRET_ACCESS_KEY", "hunter2"),
+        ("GITHUB_TOKEN", "t"),
+        ("LCX", "not an LC_ variable"),
+    ]));
+    let names: Vec<_> = kept
+        .iter()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "PATH",
+            "Path",
+            "HOME",
+            "SystemRoot",
+            "Temp",
+            "TMPDIR",
+            "LocalAppData",
+            "LC_ALL",
+            "XDG_CACHE_HOME",
+            "KUNA_JOBS"
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn kuna_gets_a_path_without_relative_entries() {
+    let kept = kuna_env(vars(&[("PATH", ":.:/bin:rel:/usr/bin")]));
+    assert_eq!(kept, vars(&[("PATH", "/bin:/usr/bin")]));
+}
+
+#[test]
+fn a_relative_temp_directory_is_not_a_working_directory() {
+    let relative = PathBuf::from("tmp");
+    assert_eq!(
+        neutral_dir(relative),
+        PathBuf::from(path::MAIN_SEPARATOR_STR)
+    );
+    let absolute = env::temp_dir();
+    assert_eq!(neutral_dir(absolute.clone()), absolute);
+}
+
+#[cfg(unix)]
+#[test]
+fn kuna_does_not_inherit_the_environment_of_bonito() {
+    // cargo sets CARGO_MANIFEST_DIR for the test process; it is not on the allowlist.
+    assert!(env::var_os("CARGO_MANIFEST_DIR").is_some());
+    let output = run_plain(
+        Path::new("/bin/sh"),
+        ["-c", "printf '%s' \"${CARGO_MANIFEST_DIR-unset}\""],
+    )
+    .expect("runs");
+    assert_eq!(output.stdout, "unset");
+}
+
+#[cfg(unix)]
+#[test]
+fn kuna_runs_in_the_temp_directory_not_in_the_working_directory() {
+    let output = run_plain(Path::new("/bin/sh"), ["-c", "pwd -P"]).expect("runs");
+    let expected = env::temp_dir().canonicalize().expect("temp dir");
+    assert_eq!(Path::new(output.stdout.trim()), expected);
+}
+
+/// `run` with the default limits and nothing to cancel it.
+fn run_plain<I, S>(kuna: &Path, args: I) -> Result<Output, Error>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run(kuna, args, &Limits::new(&AtomicBool::new(false)))
+}
+
+#[cfg(unix)]
+#[test]
+fn a_call_past_its_deadline_is_killed() {
+    let stop = AtomicBool::new(false);
+    let limits = Limits {
+        timeout: Duration::from_millis(100),
+        ..Limits::new(&stop)
+    };
+    let started = Instant::now();
+    let result = run(Path::new("/bin/sh"), ["-c", "sleep 30"], &limits);
+    assert!(matches!(result, Err(Error::TimedOut(_))), "{result:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_call_cancelled_while_running_is_killed() {
+    let stop = AtomicBool::new(false);
+    let started = Instant::now();
+    let result = thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(100));
+            stop.store(true, Ordering::Relaxed);
+        });
+        run(
+            Path::new("/bin/sh"),
+            ["-c", "sleep 30"],
+            &Limits::new(&stop),
+        )
+    });
+    assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn a_cancelled_kuna_never_starts_a_call() {
+    let stop = AtomicBool::new(true);
+    let result = run(
+        Path::new("/definitely/not/here/kuna"),
+        ["--version"],
+        &Limits::new(&stop),
+    );
+    assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_helper_that_keeps_the_pipes_open_is_still_bounded() {
+    let stop = AtomicBool::new(false);
+    let limits = Limits {
+        timeout: Duration::from_millis(200),
+        ..Limits::new(&stop)
+    };
+    let started = Instant::now();
+    let result = run(
+        Path::new("/bin/sh"),
+        ["-c", "sleep 30 & printf ok"],
+        &limits,
+    );
+    assert!(matches!(result, Err(Error::TimedOut(_))), "{result:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[cfg(unix)]
+fn run_capped(cap: usize, script: &str) -> Result<Output, Error> {
+    let stop = AtomicBool::new(false);
+    let limits = Limits {
+        stdout: cap,
+        ..Limits::new(&stop)
+    };
+    run(Path::new("/bin/sh"), ["-c", script], &limits)
+}
+
+#[cfg(unix)]
+#[test]
+fn output_past_the_cap_is_an_error() {
+    let started = Instant::now();
+    let result = run_capped(10, "head -c 100000 /dev/zero | tr '\\0' x; sleep 30");
+    assert!(matches!(result, Err(Error::TooLarge(10))), "{result:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[cfg(unix)]
+#[test]
+fn output_past_the_cap_is_an_error_even_when_kuna_has_already_exited() {
+    let result = run_capped(10, "head -c 100000 /dev/zero | tr '\\0' x");
+    assert!(matches!(result, Err(Error::TooLarge(10))), "{result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn output_of_exactly_the_cap_is_kept() {
+    let output = run_capped(10, "printf 0123456789").expect("fits");
+    assert_eq!(output.stdout, "0123456789");
+    let result = run_capped(10, "printf 01234567890");
+    assert!(matches!(result, Err(Error::TooLarge(10))), "{result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_large_answer_under_the_cap_comes_back_whole() {
+    let script = "head -c 300000 /dev/zero | tr '\\0' x";
+    let output = run_plain(Path::new("/bin/sh"), ["-c", script]).expect("runs");
+    assert_eq!(output.stdout.len(), 300_000);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_flood_on_stderr_does_not_block_kuna() {
+    let script = "head -c 1000000 /dev/zero >&2; printf ok";
+    let output = run_plain(Path::new("/bin/sh"), ["-c", script]).expect("runs");
+    assert_eq!(output.stdout, "ok");
 }
