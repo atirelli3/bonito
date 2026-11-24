@@ -46,7 +46,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: tuna
+          bin: bonito
           target: ${{ matrix.target }}
           locked: true
           checksum: sha256
