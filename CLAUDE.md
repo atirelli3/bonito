@@ -1,8 +1,8 @@
-# tuna — project guide for Claude Code
+# bonito — project guide for Claude Code
 
-**tuna**: a terminal UI (Rust, ratatui) for [kuna](https://github.com/Noelo-Lab/kuna), the agent-first Rust decompiler.
+**bonito**: a terminal UI (Rust, ratatui) for [kuna](https://github.com/Noelo-Lab/kuna), the agent-first Rust decompiler.
 One cargo crate (`src/`, `tests/`), CI/CD in `.github/workflows/`, every change tracked as a GitHub issue on the
-**tuna** Projects board (`scripts/task.sh`). Repo `atirelli3/tuna` (public). Details: `agents/init.md`.
+**bonito** Projects board (`scripts/task.sh`). Repo `atirelli3/bonito` (public). Details: `agents/init.md`.
 
 Precedence: this file > `agents/` > ECC rules (`~/.claude/rules/ecc/`) > plugin defaults.
 
@@ -82,7 +82,7 @@ for its PR · **Done** merged. Labels = the type (`feat` `fix` `docs` `refactor`
   clippy `-D warnings`, tests + line coverage ≥ 80% via cargo-llvm-cov) + `cargo test` on macOS and Windows.
   The `main` ruleset requires these checks, a PR, squash merges, and blocks force-push and deletion.
 - **Release** (`.github/workflows/release.yml`, on a `vX.Y.Z` tag): re-runs CI, checks the tag equals the
-  `Cargo.toml` version, creates the GitHub Release (notes = merged PR titles), uploads `tuna` archives + sha256 for
+  `Cargo.toml` version, creates the GitHub Release (notes = merged PR titles), uploads `bonito` archives + sha256 for
   linux x86_64/arm64, macOS arm64/x86_64, windows x86_64.
 
 ### Release
@@ -125,7 +125,7 @@ No push unless `bash scripts/gate.sh` is green: fmt, clippy `-D warnings`, all t
 [rust-anything](https://github.com/erkamyaman/rust-anything) is a CLI + MCP server + skill, not a crate: nothing goes
 in `Cargo.toml`. Install `cargo install rust-anything --locked` + `rust-anything setup`; `.mcp.json` declares its MCP
 server for this repo (tools: ToolSearch `+rust-anything`).
-- Use it whenever tuna takes over behaviour that lives in non-Rust code (kuna's web UI `integrations/web/*.js`, its
+- Use it whenever bonito takes over behaviour that lives in non-Rust code (kuna's web UI `integrations/web/*.js`, its
   Python helpers): `analyze → bridge → record → port (src/port.rs) → build → diff → shadow → gate`. A port is done
   only when `rust-anything gate` passes. `profile` + `bench` before optimising a slow path.
 - `record`, `diff` and `gate` run the original code on many generated inputs: on a copy, never with credentials in
@@ -146,7 +146,7 @@ load-bearing until it says otherwise.
 - `src/main.rs` stays thin (args, terminal setup/restore, run); logic lives in modules with unit tests; `tests/`
   drives the built binary. No `unwrap`/`expect`/`panic!` outside tests: errors return as `Result` to `main`, which
   restores the terminal before printing them.
-- tuna opens untrusted binaries: never execute them, only hand them to kuna.
-- How tuna drives kuna (cargo git dependency on its crates vs the `kuna` CLI) is decided in the first plan and
+- bonito opens untrusted binaries: never execute them, only hand them to kuna.
+- How bonito drives kuna (cargo git dependency on its crates vs the `kuna` CLI) is decided in the first plan and
   recorded in `agents/memory/decisions.md`.
 - `main` takes changes only through PRs; never push to it directly, never force-push anywhere.

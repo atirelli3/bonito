@@ -1,9 +1,9 @@
 [package]
-name = "tuna"
+name = "bonito"
 version = "0.1.0"
 edition = "2024"
 description = "A terminal UI for the kuna decompiler"
-repository = "https://github.com/atirelli3/tuna"
+repository = "https://github.com/atirelli3/bonito"
 publish = false
 
 [dependencies]

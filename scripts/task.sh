@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# task.sh — the tuna board: `task.sh` lists open items, `task.sh <issue#> <status>` adds/moves one issue.
+# task.sh — the bonito board: `task.sh` lists open items, `task.sh <issue#> <status>` adds/moves one issue.
 set -euo pipefail
 owner=atirelli3
 statuses='Todo|In Progress|In Review|Done'
 
-num=$(gh project list --owner "$owner" --format json --jq '.projects[] | select(.title == "tuna") | .number')
-[[ -n $num ]] || { echo "task.sh: no project 'tuna' for $owner" >&2; exit 1; }
+num=$(gh project list --owner "$owner" --format json --jq '.projects[] | select(.title == "bonito") | .number')
+[[ -n $num ]] || { echo "task.sh: no project 'bonito' for $owner" >&2; exit 1; }
 
 if (( $# == 0 )); then
   gh project item-list "$num" --owner "$owner" --limit 500 --format json \
