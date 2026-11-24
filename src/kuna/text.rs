@@ -9,7 +9,7 @@ const TEXT_LIMIT: usize = 1024;
 
 /// Whether a character could change what a terminal shows or hide what a name says: controls, line
 /// separators, bidirectional overrides, and invisible, filler or tag characters.
-fn is_unsafe(c: char) -> bool {
+pub fn is_unsafe(c: char) -> bool {
     c.is_control()
         || matches!(
             c,

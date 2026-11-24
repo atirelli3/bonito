@@ -2,6 +2,7 @@
 // ponytail: the views of #8-#15 consume these actions; until then the app acts on `Quit` and the prompts only.
 #![allow(dead_code)]
 
+use crate::kuna::is_unsafe;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A cursor movement. The count is passed as typed: views repeat `h j k l w b e { }` by it and read it as a line
@@ -293,7 +294,7 @@ impl Keymap {
             Kind::Search { .. } => &searches.lines,
         };
         match (code, ctrl) {
-            (KeyCode::Backspace, _) => {
+            (KeyCode::Backspace, _) | (KeyCode::Char('h'), true) => {
                 prompt.recall = None;
                 if prompt.line.pop().is_none() {
                     *slot = None;
@@ -453,14 +454,10 @@ fn typed(key: KeyEvent) -> Option<(KeyCode, bool)> {
     Some((key.code, held.contains(KeyModifiers::CONTROL)))
 }
 
-/// Whether `c` can be typed into a prompt: not a control character, and not an invisible or direction-changing
-/// one, which would make the text differ from what is shown.
+/// Whether `c` can be typed into a prompt: the text must not differ from what is shown, so nothing the screen
+/// would replace (controls, invisible and direction-changing characters).
 fn typeable(c: char) -> bool {
-    !c.is_control()
-        && !matches!(
-            c,
-            '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
-        )
+    !is_unsafe(c)
 }
 
 /// The view a `g` key opens.

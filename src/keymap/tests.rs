@@ -476,6 +476,23 @@ fn backspace_deletes_and_leaves_the_prompt_on_an_empty_line() {
 }
 
 #[test]
+fn ctrl_h_is_backspace_for_terminals_that_send_it() {
+    check(&[(":ab<C-h>c<CR>", command("ac"))]);
+    assert_eq!(prompt_after(":<C-h>"), None);
+}
+
+#[test]
+fn characters_the_screen_would_replace_are_not_typed() {
+    let mut keymap = Keymap::default();
+    feed(&mut keymap, ":q");
+    // The word joiner, an Arabic letter mark and a tag character: invisible, so the text would not match the screen.
+    for code in ['\u{2060}', '\u{061C}', '\u{E0041}'] {
+        keymap.key(KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE));
+    }
+    assert_eq!(keymap.prompt(), Some((':', "q")));
+}
+
+#[test]
 fn ctrl_u_clears_the_line() {
     check(&[(":abc<C-u>d<CR>", command("d"))]);
 }
