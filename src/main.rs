@@ -2,6 +2,7 @@
 
 mod app;
 mod args;
+mod keymap;
 mod kuna;
 mod ui;
 
