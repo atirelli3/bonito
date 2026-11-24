@@ -1,6 +1,7 @@
 //! The application state, its workers and the event loop.
 
-use crate::keymap::{self, Action, Keymap, View};
+use crate::jumps::{Jumps, Spot};
+use crate::keymap::{self, Action, Keymap, Motion, View};
 use crate::kuna::{self, Function, Reply};
 use crate::ui;
 use crate::view::Pane;
@@ -17,6 +18,8 @@ use std::thread::{self, JoinHandle};
 
 /// How many loaded views are kept: each can hold a hundred thousand lines.
 const MAX_VIEWS: usize = 64;
+/// What a mark key says outside the code pane.
+const CODE_ONLY: &str = "marks are for the code pane";
 
 /// Everything the loop reacts to.
 pub enum Msg {
@@ -110,6 +113,9 @@ pub struct App {
     /// The view the code pane shows, if one was opened.
     pub shown: Option<Shown>,
     views: HashMap<Request, Loaded>,
+    jumps: Jumps,
+    /// Lower case marks belong to the view they were set in (`Some`), upper case ones to the session (`None`).
+    marks: HashMap<(Option<Request>, char), Spot>,
     requests: Sender<Request>,
     /// The height of the panes' text, as drawn last.
     rows: usize,
@@ -136,6 +142,8 @@ impl App {
             list: Pane::new(Vec::new()),
             shown: None,
             views: HashMap::new(),
+            jumps: Jumps::default(),
+            marks: HashMap::new(),
             requests,
             rows: 0,
             running: true,
@@ -258,34 +266,178 @@ impl App {
     }
 
     /// Does what `action` asks.
-    // ponytail: #52 acts on follow in the code, the jumplist and marks, #53 on searches, #9 on the other views;
-    // until then they say it is not available. Every action is named so a new one cannot be dropped by accident.
+    // ponytail: #53 acts on searches and #9 on the other views; until then they say it is not available.
+    // Every action is named so a new one cannot be dropped by accident.
     fn apply(&mut self, action: Action) {
         match action {
             Action::Quit => self.running = false,
             Action::Command(line) => self.command(&line),
-            Action::Move { motion, count } => {
-                self.with_pane(|pane, rows| pane.motion(motion, count, rows));
-            }
+            Action::Move { motion, count } => self.move_cursor(motion, count),
             Action::Scroll(to) => self.with_pane(|pane, rows| pane.scroll(to, rows)),
             Action::Pane(to) => self.focus_pane(to),
             Action::Open(view) => self.open_view(view),
             Action::Follow => match self.focus {
                 Focus::List => self.open_view(View::Decompile),
-                Focus::Code => self.not_yet(),
+                Focus::Code => self.follow(),
             },
-            Action::Search { .. }
-            | Action::Back
-            | Action::Forward
-            | Action::SetMark(_)
-            | Action::JumpMark { .. }
-            | Action::SearchNext { .. }
-            | Action::SearchWord { .. } => self.not_yet(),
+            Action::Back => self.walk(true),
+            Action::Forward => self.walk(false),
+            Action::SetMark(mark) => self.set_mark(mark),
+            Action::JumpMark { mark, exact } => self.jump_mark(mark, exact),
+            Action::Search { .. } | Action::SearchNext { .. } | Action::SearchWord { .. } => {
+                self.not_yet();
+            }
         }
     }
 
     fn not_yet(&mut self) {
         self.message = Some("not available yet".to_string());
+    }
+
+    /// Moves the cursor of the pane that has the focus; a jump motion in the code leaves its line in the jumplist.
+    fn move_cursor(&mut self, motion: Motion, count: Option<u32>) {
+        let jump = self.focus == Focus::Code
+            && matches!(
+                motion,
+                Motion::Top
+                    | Motion::Bottom
+                    | Motion::MatchBrace
+                    | Motion::ParagraphBack
+                    | Motion::ParagraphForward
+            );
+        let before = jump.then(|| self.here()).flatten();
+        self.with_pane(|pane, rows| pane.motion(motion, count, rows));
+        if let Some(before) = before
+            && self.here().is_some_and(|now| now.line != before.line)
+        {
+            self.jumps.record(before);
+        }
+    }
+
+    /// The view shown with the cursor in it; the top while it loads.
+    fn here(&self) -> Option<Spot> {
+        let (shown, loaded) = self.current()?;
+        let (line, col) = match loaded {
+            Loaded::Ready(pane, _) => (pane.line(), pane.col()),
+            Loaded::Loading | Loaded::Failed(_) => (0, 0),
+        };
+        Some(Spot {
+            request: shown.request,
+            name: shown.name.clone(),
+            line,
+            col,
+        })
+    }
+
+    /// Leaves the view shown in the jumplist.
+    fn leave(&mut self) {
+        if let Some(here) = self.here() {
+            self.jumps.record(here);
+        }
+    }
+
+    /// Leaves the view shown in the jumplist, then shows `request`.
+    fn jump(&mut self, request: Request, name: String) {
+        self.leave();
+        self.open(request, name);
+    }
+
+    /// Shows `spot` again, cursor included, without touching the jumplist.
+    // ponytail: a view dropped from the cache (`evict`) comes back with the cursor at the top.
+    fn go(&mut self, spot: Spot) {
+        self.open(spot.request, spot.name);
+        let rows = self.rows;
+        if let Some(pane) = self.code_mut() {
+            pane.go(spot.line, spot.col, rows);
+        }
+    }
+
+    /// `Ctrl-o` (`back`) or `Ctrl-i`; nowhere to go is silent.
+    fn walk(&mut self, back: bool) {
+        let spot = if back {
+            self.here().and_then(|here| self.jumps.back(here))
+        } else {
+            self.jumps.forward()
+        };
+        if let Some(spot) = spot {
+            self.go(spot);
+        }
+    }
+
+    /// Enter in the code: opens the function named by the word under the cursor, in the view shown.
+    fn follow(&mut self) {
+        let Some((shown, Loaded::Ready(pane, _))) = self.current() else {
+            self.message = Some("nothing to follow yet".to_string());
+            return;
+        };
+        let (view, word) = (shown.request.view, pane.word());
+        let Some(word) = word else {
+            self.message = Some("no word under the cursor".to_string());
+            return;
+        };
+        match self.lookup(&word, false) {
+            Ok((address, name)) => self.jump(Request { view, address }, name),
+            Err(why) => self.message = Some(why),
+        }
+    }
+
+    /// The functions of the binary, or why they are not known.
+    fn listed(&self) -> Result<&[Function], &'static str> {
+        match &self.functions {
+            Functions::Loading => Err("the functions are still loading"),
+            Functions::Failed => Err("the functions could not be listed"),
+            Functions::Ready(list) => Ok(list),
+        }
+    }
+
+    /// The address and name of the function `word` names (see `function_named`), or why there is none.
+    fn lookup(&self, word: &str, contained: bool) -> Result<(u64, String), String> {
+        let list = self.listed().map_err(str::to_string)?;
+        function_named(list, word, contained)
+            .map(|function| (function.address, function.name.as_str().to_string()))
+            .ok_or_else(|| format!("no function: {word}"))
+    }
+
+    /// The key a mark is kept under: a lower case mark belongs to the view shown.
+    fn mark_key(&self, mark: char) -> (Option<Request>, char) {
+        let scope = self.shown.as_ref().map(|shown| shown.request);
+        (scope.filter(|_| mark.is_ascii_lowercase()), mark)
+    }
+
+    /// The cursor of the code pane, once its lines are there, or why a mark cannot be set.
+    fn mark_spot(&self) -> Result<Spot, &'static str> {
+        match (self.focus, self.current()) {
+            (Focus::Code, Some((_, Loaded::Ready(..)))) => self.here().ok_or(CODE_ONLY),
+            (Focus::Code, _) => Err("nothing to mark yet"),
+            (Focus::List, _) => Err(CODE_ONLY),
+        }
+    }
+
+    /// `m` and a letter: remembers the cursor of the code pane.
+    fn set_mark(&mut self, mark: char) {
+        match self.mark_spot() {
+            Ok(spot) => {
+                self.marks.insert(self.mark_key(mark), spot);
+            }
+            Err(why) => self.message = Some(why.to_string()),
+        }
+    }
+
+    /// `'` or `` ` `` and a letter: goes to the mark's line (first non-blank character) or, `exact`, its column.
+    fn jump_mark(&mut self, mark: char, exact: bool) {
+        if self.focus != Focus::Code {
+            self.message = Some(CODE_ONLY.to_string());
+            return;
+        }
+        let Some(spot) = self.marks.get(&self.mark_key(mark)).cloned() else {
+            self.message = Some(format!("mark not set: {mark}"));
+            return;
+        };
+        self.leave();
+        self.go(spot);
+        if !exact {
+            self.with_pane(|pane, rows| pane.motion(Motion::FirstNonBlank, None, rows));
+        }
     }
 
     /// Lets `change` act on the pane that has the focus, with the height of the panes.
@@ -346,13 +498,9 @@ impl App {
                 .selected()
                 .map(|function| (function.address, function.name.as_str().to_string())),
         };
-        let nothing = match &self.functions {
-            Functions::Loading => "the functions are still loading",
-            Functions::Failed => "the functions could not be listed",
-            Functions::Ready(_) => "no function selected",
-        };
+        let nothing = self.listed().err().unwrap_or("no function selected");
         match target {
-            Some((address, name)) => self.open(Request { view, address }, name),
+            Some((address, name)) => self.jump(Request { view, address }, name),
             None => self.message = Some(nothing.to_string()),
         }
     }
@@ -373,14 +521,56 @@ impl App {
         }
     }
 
-    /// Runs a `:` command; `q`, `quit` and `q!` are the only ones so far.
+    /// Runs a `:` command: `q` `q!` `quit`, and `e NAME|0xADDR` (`edit`).
     fn command(&mut self, line: &str) {
-        match line.trim() {
-            "q" | "q!" | "quit" => self.running = false,
-            "" => {}
-            other => self.message = Some(format!("not a command: {other}")),
+        let line = line.trim();
+        let (name, argument) = line
+            .split_once(char::is_whitespace)
+            .map_or((line, ""), |(name, rest)| (name, rest.trim()));
+        match (name, argument) {
+            ("q" | "q!" | "quit", "") => self.running = false,
+            ("e" | "edit", "") => self.message = Some(":e needs a name or an address".to_string()),
+            ("e" | "edit", word) => match self.lookup(word, true) {
+                Ok((address, function)) => {
+                    let request = Request {
+                        view: View::Decompile,
+                        address,
+                    };
+                    self.jump(request, function);
+                }
+                Err(why) => self.message = Some(why),
+            },
+            ("", _) => {}
+            _ => self.message = Some(format!("not a command: {line}")),
         }
     }
+}
+
+/// The function `word` names: its name, an alias or its entry address (`0x…`); `contained` takes any address in it.
+// ponytail: the first match in address order wins; duplicate names, and an alias equal to another's name, are not told apart.
+fn function_named<'a>(
+    functions: &'a [Function],
+    word: &str,
+    contained: bool,
+) -> Option<&'a Function> {
+    let address = word
+        .strip_prefix("0x")
+        .or_else(|| word.strip_prefix("0X"))
+        .and_then(|digits| u64::from_str_radix(digits, 16).ok());
+    let entry = |function: &&Function| Some(function.address) == address;
+    let inside = |function: &&Function| {
+        let end = function.address.saturating_add(function.size.max(1));
+        contained && address.is_some_and(|at| (function.address..end).contains(&at))
+    };
+    let named = |function: &&Function| {
+        function.name.as_str() == word
+            || function.aliases.iter().any(|alias| alias.as_str() == word)
+    };
+    functions
+        .iter()
+        .find(entry)
+        .or_else(|| functions.iter().find(inside))
+        .or_else(|| functions.iter().find(named))
 }
 
 /// Draws the app and applies messages until it quits or the terminal fails; no sender left is an error too.

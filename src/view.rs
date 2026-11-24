@@ -1,5 +1,5 @@
 //! A cursor over lines of text: vim motions, scrolling and search. No I/O and no terminal: the views draw it.
-// ponytail: `find` and `word` wait for the views of #52 and #53; drop this allow when they use them.
+// ponytail: `find` waits for the searches of #53; drop this allow when it is used.
 #![allow(dead_code)]
 
 use crate::keymap::{Motion, ScrollTo};
@@ -319,6 +319,12 @@ impl Pane {
             ScrollTo::Center => self.line.saturating_sub(rows / 2),
             ScrollTo::Bottom => (self.line + 1).saturating_sub(rows),
         };
+    }
+
+    /// Puts the cursor at `line` and `col`, both held inside the text, and moves the window to show it.
+    pub fn go(&mut self, line: usize, col: usize, rows: usize) {
+        self.place(line, col);
+        self.keep_visible(rows);
     }
 
     /// Moves to the next match of `text` after the cursor (before it, if not `forward`), wrapping around the

@@ -251,15 +251,12 @@ fn a_view_with_no_function_to_show_says_why() {
 }
 
 #[test]
-fn marks_the_jumplist_and_search_repeats_say_they_are_not_available_yet() {
-    for keys in ["ma", "'a", "n", "*"] {
+fn search_repeats_say_they_are_not_available_yet() {
+    for keys in ["n", "*"] {
         let mut app = app();
         type_text(&mut app, keys);
         assert_eq!(app.message.as_deref(), Some("not available yet"), "{keys}");
     }
-    let mut app = app();
-    ctrl(&mut app, 'o');
-    assert_eq!(app.message.as_deref(), Some("not available yet"));
 }
 
 #[test]
@@ -647,13 +644,9 @@ fn the_code_pane_cannot_take_the_focus_while_it_shows_nothing() {
 }
 
 #[test]
-fn follow_in_the_code_and_the_other_views_are_not_available_yet() {
+fn the_other_views_are_not_available_yet() {
     let (mut app, _queue) = three();
     type_text(&mut app, "gr");
-    assert_eq!(app.message.as_deref(), Some("not available yet"));
-    enter(&mut app);
-    type_text(&mut app, "j");
-    enter(&mut app);
     assert_eq!(app.message.as_deref(), Some("not available yet"));
 }
 
@@ -770,4 +763,282 @@ fn the_loop_gives_the_app_the_height_of_its_panes() {
     run(&mut terminal, &mut app, &rx).expect("runs");
     // 12 rows less the 2-row status, less the 2 border rows.
     assert_eq!(app.rows, 8);
+}
+
+fn function_with(name: &str, address: u64, size: u64, aliases: &[&str]) -> Function {
+    let aliases = serde_json::to_string(aliases).expect("json");
+    let text =
+        format!(r#"{{"name":"{name}","address":{address},"size":{size},"aliases":{aliases}}}"#);
+    serde_json::from_str(&text).expect("a function")
+}
+
+fn found(word: &str) -> Option<u64> {
+    let list = [
+        function_with("main", 0x100, 16, &["entry"]),
+        function_with("tail", 0x110, 0, &[]),
+    ];
+    function_named(&list, word, true).map(|function| function.address)
+}
+
+#[test]
+fn a_function_is_found_by_name_alias_or_any_address_inside_it() {
+    assert_eq!(found("main"), Some(0x100));
+    assert_eq!(found("entry"), Some(0x100));
+    assert_eq!(found("0x100"), Some(0x100));
+    assert_eq!(found("0x10f"), Some(0x100));
+    assert_eq!(found("0X10F"), Some(0x100));
+    assert_eq!(
+        found("0x110"),
+        Some(0x110),
+        "a size of 0 still has its entry"
+    );
+    for word in ["0x111", "0xzz", "0x", "nope", ""] {
+        assert_eq!(found(word), None, "{word:?}");
+    }
+}
+
+#[test]
+fn an_address_is_the_function_that_starts_there_before_one_that_contains_it() {
+    let list = [
+        function_with("wide", 0x100, 0x100, &[]),
+        function_with("inner", 0x120, 8, &[]),
+    ];
+    let name = |word| function_named(&list, word, true).map(|function| function.name.as_str());
+    assert_eq!(name("0x120"), Some("inner"));
+}
+
+#[test]
+fn an_address_inside_a_function_is_found_only_when_asked_for() {
+    let list = [function_with("main", 0x100, 16, &[])];
+    assert_eq!(
+        function_named(&list, "0x104", true).map(|f| f.address),
+        Some(0x100)
+    );
+    assert!(function_named(&list, "0x104", false).is_none());
+    assert!(function_named(&list, "0x100", false).is_some());
+    assert!(function_named(&list, "main", false).is_some());
+}
+
+fn colon(app: &mut App, line: &str) {
+    type_text(app, &format!(":{line}"));
+    enter(app);
+}
+
+/// alpha open in the code pane with `lines`, asked for and answered.
+fn alpha_open(lines: &[&str]) -> (App, Receiver<Request>) {
+    let (mut app, queue) = three();
+    enter(&mut app);
+    queue.try_recv().expect("asked");
+    app.update(code(View::Decompile, ALPHA, lines, None))
+        .expect("updates");
+    (app, queue)
+}
+
+fn shown_name(app: &App) -> Option<&str> {
+    app.shown.as_ref().map(|shown| shown.name.as_str())
+}
+
+#[test]
+fn enter_on_a_function_name_in_the_code_opens_that_function() {
+    let (mut app, queue) = alpha_open(&["beta(1);"]);
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, BETA)));
+    assert_eq!(app.loading().as_deref(), Some("decompiling beta…"));
+}
+
+#[test]
+fn enter_on_an_address_in_the_disassembly_stays_in_the_disassembly() {
+    let (mut app, queue) = three();
+    type_text(&mut app, "ga");
+    queue.try_recv().expect("asked");
+    let listing = code(View::Disassembly, ALPHA, &["0x10  CALL 0x20"], None);
+    app.update(listing).expect("updates");
+    type_text(&mut app, "ww");
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::Disassembly, BETA)));
+}
+
+#[test]
+fn enter_on_something_that_is_no_function_says_so_and_asks_for_nothing() {
+    let (mut app, queue) = alpha_open(&["int v1;", "{"]);
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("no function: int"));
+    type_text(&mut app, "j");
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("no word under the cursor"));
+    assert!(queue.try_recv().is_err());
+}
+
+#[test]
+fn enter_follows_only_an_entry_address_but_colon_e_takes_any_address_in_a_function() {
+    let (mut app, queue) = alpha_open(&["0x34"]);
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("no function: 0x34"));
+    assert!(queue.try_recv().is_err());
+    colon(&mut app, "e 0x34");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, BETA)));
+}
+
+#[test]
+fn follow_and_marks_wait_for_the_code_to_load() {
+    let (mut app, _queue) = three();
+    enter(&mut app);
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("nothing to follow yet"));
+    type_text(&mut app, "ma");
+    assert_eq!(app.message.as_deref(), Some("nothing to mark yet"));
+}
+
+#[test]
+fn colon_e_jumps_to_a_function_by_name_or_address() {
+    let (mut app, queue) = three();
+    colon(&mut app, "e beta");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, BETA)));
+    assert_eq!(app.focus, Focus::Code);
+    assert_eq!(app.loading().as_deref(), Some("decompiling beta…"));
+    colon(&mut app, "edit 0x30");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, GAMMA)));
+}
+
+#[test]
+fn colon_e_with_nothing_to_open_says_why() {
+    let mut early = app();
+    colon(&mut early, "e main");
+    assert_eq!(
+        early.message.as_deref(),
+        Some("the functions are still loading")
+    );
+    let (mut app, queue) = three();
+    colon(&mut app, "e nope");
+    assert_eq!(app.message.as_deref(), Some("no function: nope"));
+    colon(&mut app, "e");
+    assert_eq!(
+        app.message.as_deref(),
+        Some(":e needs a name or an address")
+    );
+    assert!(queue.try_recv().is_err());
+}
+
+#[test]
+fn a_jump_with_g_is_walked_back_and_forth_with_ctrl_o_and_ctrl_i() {
+    let (mut app, _queue) = alpha_open(&["a", "b", "c", "d", "e"]);
+    type_text(&mut app, "jjG");
+    assert_eq!(code_pane(&app).line(), 4);
+    ctrl(&mut app, 'o');
+    assert_eq!(code_pane(&app).line(), 2);
+    ctrl(&mut app, 'i');
+    assert_eq!(code_pane(&app).line(), 4);
+}
+
+#[test]
+fn ordinary_moves_are_not_jumps_and_an_empty_jumplist_does_nothing() {
+    let mut nothing_open = app();
+    ctrl(&mut nothing_open, 'o');
+    assert_eq!(nothing_open.message, None);
+    let (mut app, _queue) = alpha_open(&["a", "b", "c"]);
+    type_text(&mut app, "jj");
+    ctrl(&mut app, 'o');
+    assert_eq!((code_pane(&app).line(), app.message.as_deref()), (2, None));
+    ctrl(&mut app, 'i');
+    assert_eq!(code_pane(&app).line(), 2);
+}
+
+#[test]
+fn ctrl_o_returns_to_the_function_left_and_ctrl_i_to_the_one_followed() {
+    let (mut app, queue) = alpha_open(&["a", "b", "c"]);
+    type_text(&mut app, "jj");
+    colon(&mut app, "e beta");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, BETA)));
+    app.update(code(View::Decompile, BETA, &["x", "y"], None))
+        .expect("updates");
+    ctrl(&mut app, 'o');
+    assert_eq!(
+        (shown_name(&app), code_pane(&app).line()),
+        (Some("alpha"), 2)
+    );
+    assert!(queue.try_recv().is_err(), "alpha was loaded already");
+    ctrl(&mut app, 'i');
+    assert_eq!(shown_name(&app), Some("beta"));
+}
+
+#[test]
+fn a_new_jump_after_ctrl_o_forgets_the_way_forward() {
+    let (mut app, _queue) = alpha_open(&["a"]);
+    colon(&mut app, "e beta");
+    app.update(code(View::Decompile, BETA, &["b"], None))
+        .expect("updates");
+    ctrl(&mut app, 'o');
+    colon(&mut app, "e gamma");
+    app.update(code(View::Decompile, GAMMA, &["g"], None))
+        .expect("updates");
+    ctrl(&mut app, 'i');
+    assert_eq!(shown_name(&app), Some("gamma"));
+    ctrl(&mut app, 'o');
+    assert_eq!(shown_name(&app), Some("alpha"));
+}
+
+#[test]
+fn opening_from_the_list_leaves_the_view_shown_in_the_jumplist() {
+    let (mut app, _queue) = alpha_open(&["a", "b", "c"]);
+    type_text(&mut app, "jj");
+    ctrl_w(&mut app, 'h');
+    type_text(&mut app, "j");
+    enter(&mut app);
+    assert_eq!(shown_name(&app), Some("beta"));
+    ctrl(&mut app, 'o');
+    assert_eq!(
+        (shown_name(&app), code_pane(&app).line()),
+        (Some("alpha"), 2)
+    );
+}
+
+fn at(app: &App) -> (usize, usize) {
+    (code_pane(app).line(), code_pane(app).col())
+}
+
+#[test]
+fn a_mark_returns_to_its_line_and_with_a_backtick_to_its_column() {
+    let (mut app, _queue) = alpha_open(&["a", "  bb", "c", "d"]);
+    type_text(&mut app, "jlmaG'a");
+    assert_eq!(at(&app), (1, 2));
+    type_text(&mut app, "G`a");
+    assert_eq!(at(&app), (1, 1));
+}
+
+#[test]
+fn a_jump_to_a_mark_can_be_undone_with_ctrl_o() {
+    let (mut app, _queue) = alpha_open(&["a", "b", "c", "d"]);
+    type_text(&mut app, "maG'a");
+    assert_eq!(code_pane(&app).line(), 0);
+    ctrl(&mut app, 'o');
+    assert_eq!(code_pane(&app).line(), 3);
+}
+
+#[test]
+fn a_lower_case_mark_belongs_to_its_view_and_an_upper_case_one_to_the_session() {
+    let (mut app, _queue) = alpha_open(&["a", "b", "c"]);
+    type_text(&mut app, "jmajmB");
+    colon(&mut app, "e beta");
+    app.update(code(View::Decompile, BETA, &["x"], None))
+        .expect("updates");
+    type_text(&mut app, "'a");
+    assert_eq!(app.message.as_deref(), Some("mark not set: a"));
+    type_text(&mut app, "'B");
+    assert_eq!(
+        (shown_name(&app), code_pane(&app).line()),
+        (Some("alpha"), 2)
+    );
+}
+
+#[test]
+fn marks_are_for_the_code_pane() {
+    let (mut app, _queue) = three();
+    for keys in ["ma", "'a"] {
+        type_text(&mut app, keys);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("marks are for the code pane"),
+            "{keys}"
+        );
+    }
 }

@@ -81,7 +81,7 @@ fact the code doesn't say.
 - [WHY] `keymap::View` is the view enum #8 imports, not a second one. The prompt draws on the last row of the screen,
   not of the status area, so it shows on a terminal of one or two rows.
 
-## Core views (#8: `src/app.rs`, `src/view.rs`, `src/ui.rs`)
+## Core views (#8: `src/app.rs`, `src/worker.rs`, `src/jumps.rs`, `src/view.rs`, `src/ui.rs`)
 - [USER-YES] (2026-11-24) `:e NAME|0xADDR` jumps to a function (name, alias or address) in the decompile view; one
   binary per session, `:e` never opens another file.
 - [USER-YES] (2026-11-24) `/ ? n N * #` are vim search (jump to the next match) in both panes; there is no list filter.
@@ -102,6 +102,17 @@ fact the code doesn't say.
 - [WHY] `App::set_rows` is called only by `run` (from `ui::text_rows`); a test that draws or pages must call it, or
   the window is 0 rows and every `j` scrolls it. Focus moves to the code pane on every open, and the code pane takes
   the focus only with a view shown.
+- [USER-YES] (2026-11-24) The jumplist (`src/jumps.rs`) is a stack like vim's `jumpoptions=stack`, 100 spots: a jump
+  after `Ctrl-o` forgets the spots ahead. Every open (Enter, `gd` `ga`, follow, `:e`), `G gg % { }` in the code when
+  the line changes, and a mark jump leave the view shown in it. `Ctrl-o` / `Ctrl-i` with nowhere to go are silent.
+- [USER-YES] (2026-11-24) Marks: lower case belong to the view they were set in, upper case to the session (jumping
+  to one opens its view); `'x` goes to the line's first non-blank, `` `x `` to the exact column. Code pane only, and
+  only once its lines are there. No `''` mark.
+- [WHY] Enter in the code follows a function's name, alias or entry address, never an address merely inside a
+  function: a hex constant in the C would open whatever contains it. `:e` also takes any address inside a function. An
+  entry beats a containing function; otherwise the first match in address order wins (duplicate names are not told
+  apart). Follow keeps the view shown, `:e` opens the decompile view.
+- [WHY] A recorded spot or mark in a view dropped from the cache (`evict`) comes back with the cursor at the top.
 
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool
