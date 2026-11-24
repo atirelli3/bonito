@@ -1,6 +1,6 @@
 ---
 name: tests
-description: Runs tuna's approved test commands on Haiku — the push gate (scripts/gate.sh) or cargo test, optionally filtered — and reports failures with file:line and the failing output. Use after a change and for the push gate. Never edits or fixes anything.
+description: Runs bonito's approved test commands on Haiku — the push gate (scripts/gate.sh) or cargo test, optionally filtered — and reports failures with file:line and the failing output. Use after a change and for the push gate. Never edits or fixes anything.
 tools: Bash, Read, Grep, Glob
 model: haiku
 hooks:
