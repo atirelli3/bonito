@@ -31,6 +31,13 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
 - [WHY] Releases are nightly tags `v1.NNNN` with `kuna-vX-{linux-x86_64,linux-arm64,macos-arm64,macos-x86_64}.tar.gz`
   and `kuna-vX-windows-x86_64.zip`; no checksum file (GitHub's per-asset `digest` has the sha256). No Windows-ARM
   build: bonito runs the x64 one there under emulation.
+- [WHY] `kuna-version` = the tested version on line 1, then one `<platform> <sha256>` per platform. `scripts/kuna.sh`
+  verifies the download against those pinned sums, never against the digest GitHub reports next to the asset: that
+  one would change with a re-uploaded asset. It uses `curl` (public release), so CI needs no token. It skips the
+  cached `target/kuna` when `CI` is set. To bump: change line 1 and refresh the sums with
+  `gh api repos/Noelo-Lab/kuna/releases/tags/vX --jq '.assets[] | "\(.name) \(.digest)"'`, then run the gate.
+- [WHY] Git Bash's `tar` is GNU tar and can't read `.zip`: on Windows `kuna.sh` calls the system bsdtar
+  (`%SYSTEMROOT%\System32\tar.exe`). The Windows path is only exercised by CI's `test (windows-latest)`.
 - [WHY] AUR already ships `kuna-bin` (provides `kuna`); nixpkgs has no kuna.
 
 ## REA

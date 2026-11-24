@@ -42,4 +42,6 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: bash scripts/kuna.sh
+        shell: bash
       - run: cargo test --locked
