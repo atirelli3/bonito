@@ -58,6 +58,28 @@ fact the code doesn't say.
   kuna's direct child is killed: both are tracked in #42. `require_file` is a UX pre-check, not a guard: the path is
   opened later by kuna and a symlink can be swapped in between; kuna only ever reads it.
 
+## Keymap (`src/keymap.rs`)
+- [USER-YES] (2026-11-24) The v1 bindings (approved with the #7 plan): motions `j k h l w b e 0 ^ $ gg G { } %`
+  (arrows, Home/End, PageUp/PageDown too), `Ctrl-d/u/f/b`, `zt zz zb`, `Ctrl-w h l w W`, `Enter` follows,
+  `Ctrl-o` / `Ctrl-i` (Tab) walk the jumplist, marks `m{x}` `'{x}` `` `{x} ``, `/ ? n N * #`, `:`, `gd ga gr gs gc gh gp
+  gi` open the views, `q ZZ ZQ` quit. Crypto, blobs, unpack and the option views are `:` commands. `H M L`, folds, `.`
+  and macros are out of v1.
+- [WHY] `q` quits because there are no macros. `Ctrl-C` cancels a count, a prefix or a prompt, and quits only when
+  there is nothing to cancel. `Esc` only cancels.
+- [WHY] `count: None` and `Some(1)` differ (`G` is the last line, `1G` line 1); the cap is 99 999; `0` is `LineStart`
+  unless a count is being typed. Counts are passed as typed: each view decides what they mean.
+- [WHY] The keymap never interprets a `:` line: it emits `Command(String)` and `App::command` owns the commands.
+  `App::apply` names every `Action` (no `_` arm), so an action a view forgets fails to compile.
+- [WHY] Prompt lines are capped at 500 characters, each history (`:`, and one shared by `/` and `?`) at 100 lines
+  with consecutive duplicates dropped; characters kuna's `is_unsafe` rejects are not typed, so the text always
+  matches what is shown. Backspace removes one scalar, not one grapheme (no new dependency for it).
+- [WHY] Windows reports AltGr (needed for `{` on many layouts) as Ctrl+Alt: `typed` treats that as a plain character
+  and ignores every other Alt / Super key. Only `Ctrl-w` takes a Ctrl key as its second key.
+- [WHY] `App.status` is kuna's (notes, errors); `App.message` answers the last key or command and the next key
+  clears it. Never write command feedback to `status`: it can hold the only reason a request failed.
+- [WHY] `keymap::View` is the view enum #8 imports, not a second one. The prompt draws on the last row of the screen,
+  not of the status area, so it shows on a terminal of one or two rows.
+
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool
   (`cargo install rust-anything --locked`) plus `.mcp.json`, never a `Cargo.toml` entry.

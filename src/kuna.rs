@@ -18,7 +18,7 @@ mod json;
 mod text;
 
 pub use json::{Decompiled, Disassembly, Function};
-pub use text::single_line;
+pub use text::{is_unsafe, single_line};
 
 /// The kuna binary's file name on this platform.
 const KUNA_EXE: &str = if cfg!(windows) { "kuna.exe" } else { "kuna" };

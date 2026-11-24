@@ -24,8 +24,53 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_functions(frame, list, app);
     let placeholder = Paragraph::new("no function selected").block(Block::bordered().title("Code"));
     frame.render_widget(placeholder, code);
-    let line = Paragraph::new(status_line(app)).wrap(Wrap { trim: true });
-    frame.render_widget(line, status);
+    render_status(frame, status, app);
+}
+
+/// The last row of `area`.
+fn last_row(area: Rect) -> Rect {
+    Rect {
+        y: area.bottom().saturating_sub(1),
+        height: area.height.min(1),
+        ..area
+    }
+}
+
+/// The status area: the status line, with the pending keys at its right. An open prompt takes the last row of the
+/// screen, so it shows even when the terminal is too short for the status area.
+fn render_status(frame: &mut Frame, area: Rect, app: &App) {
+    let status = Paragraph::new(status_line(app));
+    if let Some((leader, text)) = app.keymap.prompt() {
+        frame.render_widget(
+            status,
+            Rect {
+                height: area.height.min(1),
+                ..area
+            },
+        );
+        render_prompt(frame, last_row(frame.area()), leader, text);
+        return;
+    }
+    frame.render_widget(status.wrap(Wrap { trim: true }), area);
+    let pending = app.keymap.pending();
+    if !pending.is_empty() {
+        frame.render_widget(Paragraph::new(pending).right_aligned(), last_row(area));
+    }
+}
+
+/// The prompt on one row, showing its end when it is longer than the row, with the cursor after it.
+// ponytail: one column per character; a wide character shifts the cursor.
+fn render_prompt(frame: &mut Frame, area: Rect, leader: char, text: &str) {
+    if area.is_empty() {
+        return;
+    }
+    let shown = format!("{leader}{}", single_line(text, STATUS_LIMIT));
+    let room = usize::from(area.width).saturating_sub(1);
+    let skipped = shown.chars().count().saturating_sub(room);
+    let tail: String = shown.chars().skip(skipped).collect();
+    let column = u16::try_from(tail.chars().count()).unwrap_or_default();
+    frame.render_widget(Paragraph::new(tail), area);
+    frame.set_cursor_position((area.x + column, area.y));
 }
 
 /// The function list, as many rows as fit.
@@ -52,8 +97,8 @@ fn function_items(functions: &Functions, rows: usize) -> Vec<ListItem<'_>> {
     }
 }
 
-/// `state`, what kuna said, the version warning, then `name · kuna VERSION`; cleaned for the terminal.
-/// The reason comes first: on a narrow terminal the end of the line is what gets cut.
+/// `state`, the last message, what kuna said, the version warning, then `name · kuna VERSION`; cleaned for the
+/// terminal. The reasons come first: on a narrow terminal the end of the line is what gets cut.
 fn status_line(app: &App) -> String {
     let state = match &app.functions {
         Functions::Loading => "loading…".to_string(),
@@ -64,7 +109,12 @@ fn status_line(app: &App) -> String {
     let name = path.file_name().unwrap_or(path.as_os_str());
     let name = single_line(&name.to_string_lossy(), NAME_LIMIT);
     let mut parts = vec![state];
-    parts.extend(app.status.iter().chain(&app.warning).cloned());
+    parts.extend(
+        [&app.message, &app.status, &app.warning]
+            .into_iter()
+            .flatten()
+            .cloned(),
+    );
     parts.push(format!("{name} · kuna {}", app.kuna_version));
     single_line(&parts.join(" · "), STATUS_LIMIT)
 }
@@ -76,6 +126,7 @@ mod tests {
     use crate::kuna::{Error, Function, Reply};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
 
     fn function(name: &str) -> Function {
@@ -210,6 +261,119 @@ mod tests {
         let line = status_line(&app(&format!("/samples/{}", "n".repeat(70))));
         let name = line.rsplit(" · ").nth(1).expect("the name part");
         assert_eq!(name.chars().count(), NAME_LIMIT);
+    }
+
+    /// Types `text` as plain key presses.
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            app.update(Msg::Input(Ok(Event::Key(key))))
+                .expect("updates");
+        }
+    }
+
+    /// Where the cursor ends up after drawing `app` on a `width` x `height` terminal.
+    fn cursor_after(app: &App, width: u16, height: u16) -> (u16, u16) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("a test terminal");
+        terminal.draw(|frame| render(frame, app)).expect("draws");
+        let position = terminal.get_cursor_position().expect("a cursor position");
+        (position.x, position.y)
+    }
+
+    #[test]
+    fn an_open_prompt_is_on_the_last_row_with_the_cursor_after_it() {
+        let mut app = app("hello.elf");
+        type_text(&mut app, ":ab");
+        let rows = rows(&app, 40, 8);
+        assert!(rows[7].starts_with(":ab"), "{rows:?}");
+        assert_eq!(cursor_after(&app, 40, 8), (3, 7));
+    }
+
+    #[test]
+    fn the_status_stays_above_the_prompt() {
+        let mut app = app("hello.elf");
+        type_text(&mut app, ":");
+        let rows = rows(&app, 60, 8);
+        assert!(rows[6].contains("loading… · hello.elf"), "{rows:?}");
+    }
+
+    #[test]
+    fn a_search_prompt_shows_its_leader() {
+        let mut forward = app("hello.elf");
+        type_text(&mut forward, "/foo");
+        assert!(rows(&forward, 40, 8)[7].starts_with("/foo"));
+        let mut backward = app("hello.elf");
+        type_text(&mut backward, "?foo");
+        assert!(rows(&backward, 40, 8)[7].starts_with("?foo"));
+    }
+
+    #[test]
+    fn a_prompt_longer_than_the_row_shows_its_end() {
+        let mut app = app("hello.elf");
+        type_text(&mut app, &format!(":{}END", "a".repeat(60)));
+        let rows = rows(&app, 20, 8);
+        // 19 columns of text and one blank under the cursor.
+        assert_eq!(rows[7], format!("{}END ", "a".repeat(16)));
+        assert_eq!(cursor_after(&app, 20, 8), (19, 7));
+    }
+
+    #[test]
+    fn a_prompt_that_exactly_fits_keeps_its_leader_and_the_cursor_after_it() {
+        let mut app = app("hello.elf");
+        type_text(&mut app, &format!(":{}", "a".repeat(18)));
+        let rows = rows(&app, 20, 8);
+        assert_eq!(rows[7], format!(":{} ", "a".repeat(18)));
+        assert_eq!(cursor_after(&app, 20, 8), (19, 7));
+    }
+
+    #[test]
+    fn the_prompt_shows_on_terminals_too_short_for_the_status_area() {
+        let mut app = app("hello.elf");
+        type_text(&mut app, ":abc");
+        for height in 1..=3 {
+            let rows = rows(&app, 30, height);
+            let last = rows.last().expect("a last row");
+            assert!(last.starts_with(":abc"), "height {height}: {rows:?}");
+            assert_eq!(cursor_after(&app, 30, height), (4, height - 1));
+        }
+    }
+
+    #[test]
+    fn the_last_message_is_in_the_status_line() {
+        let mut app = app("hello.elf");
+        type_text(&mut app, ":nope");
+        app.update(Msg::Input(Ok(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))))
+        .expect("updates");
+        let line = status_line(&app);
+        assert!(
+            line.starts_with("loading… · not a command: nope · hello.elf"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn no_prompt_without_a_prompt_and_pending_keys_show_on_the_right() {
+        let mut app = app("hello.elf");
+        assert!(!screen(&app, 30, 8).contains("2g"));
+        type_text(&mut app, "2g");
+        let rows = rows(&app, 30, 8);
+        assert!(rows[7].trim_end().ends_with("2g"), "{rows:?}");
+        assert!(rows[6].contains("loading…"), "{rows:?}");
+    }
+
+    #[test]
+    fn terminals_of_any_tiny_size_do_not_panic_with_a_prompt_open() {
+        let mut app = app("hello.elf");
+        type_text(&mut app, ":abc");
+        for width in 0..=3 {
+            for height in 0..=3 {
+                rows(&app, width, height);
+                cursor_after(&app, width, height);
+            }
+        }
     }
 
     #[test]

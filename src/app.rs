@@ -1,10 +1,11 @@
 //! The application state, its workers and the event loop.
 
+use crate::keymap::{Action, Keymap};
 use crate::kuna::{self, Function, Kuna, Reply};
 use crate::ui;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use std::error::Error;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
@@ -41,8 +42,12 @@ pub struct App {
     pub functions: Functions,
     /// What kuna said while still succeeding, or why the last request failed.
     pub status: Option<String>,
+    /// What the last key or command answered ("not a command: x"); the next key clears it.
+    pub message: Option<String>,
     /// Set when kuna is not the version bonito was tested with; it stays for the whole session.
     pub warning: Option<String>,
+    /// Turns keys into actions; the screen shows its prompt and pending keys.
+    pub keymap: Keymap,
     running: bool,
 }
 
@@ -54,7 +59,9 @@ impl App {
             kuna_version,
             functions: Functions::Loading,
             status: None,
+            message: None,
             warning,
+            keymap: Keymap::default(),
             running: true,
         }
     }
@@ -85,12 +92,42 @@ impl App {
         Ok(())
     }
 
-    /// `q` and Ctrl-C quit.
+    /// Feeds the key to the keymap and applies the action it completes; the last message goes with the key.
     fn on_key(&mut self, key: KeyEvent) {
-        let ctrl_c =
-            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl_c || key.code == KeyCode::Char('q') {
-            self.running = false;
+        self.message = None;
+        if let Some(action) = self.keymap.key(key) {
+            self.apply(action);
+        }
+    }
+
+    /// Does what `action` asks.
+    // ponytail: the views of #8-#15 act on the rest. Until then a search, a view or a follow says it is not
+    // available and the motions are silent; every action is named so a new one cannot be dropped by accident.
+    fn apply(&mut self, action: Action) {
+        match action {
+            Action::Quit => self.running = false,
+            Action::Command(line) => self.command(&line),
+            Action::Search { .. } | Action::Open(_) | Action::Follow => {
+                self.message = Some("not available yet".to_string());
+            }
+            Action::Move { .. }
+            | Action::Scroll(_)
+            | Action::Pane(_)
+            | Action::Back
+            | Action::Forward
+            | Action::SetMark(_)
+            | Action::JumpMark { .. }
+            | Action::SearchNext { .. }
+            | Action::SearchWord { .. } => {}
+        }
+    }
+
+    /// Runs a `:` command; `q`, `quit` and `q!` are the only ones so far.
+    fn command(&mut self, line: &str) {
+        match line.trim() {
+            "q" | "q!" | "quit" => self.running = false,
+            "" => {}
+            other => self.message = Some(format!("not a command: {other}")),
         }
     }
 }

@@ -1,6 +1,7 @@
 //! Tests for the app state, the loop and the worker.
 use super::*;
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use std::path::Path;
 use std::sync::mpsc;
 
@@ -66,6 +67,160 @@ fn other_keys_and_a_key_release_do_not_quit() {
     app.update(release).expect("updates");
     app.update(Msg::Input(Ok(Event::Resize(80, 24))))
         .expect("updates");
+    assert!(app.running());
+}
+
+/// Types `text` as plain key presses.
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.update(press(KeyCode::Char(c))).expect("updates");
+    }
+}
+
+fn enter(app: &mut App) {
+    app.update(press(KeyCode::Enter)).expect("updates");
+}
+
+#[test]
+fn colon_q_enter_quits_but_not_before_enter() {
+    let mut app = app();
+    type_text(&mut app, ":q");
+    assert!(app.running());
+    enter(&mut app);
+    assert!(!app.running());
+}
+
+#[test]
+fn quit_commands_quit() {
+    for command in [":quit", ":q!", ":q", ": q "] {
+        let mut app = app();
+        type_text(&mut app, command);
+        enter(&mut app);
+        assert!(!app.running(), "{command}");
+    }
+}
+
+#[test]
+fn zz_quits() {
+    let mut app = app();
+    type_text(&mut app, "ZZ");
+    assert!(!app.running());
+}
+
+#[test]
+fn an_unknown_command_is_reported_and_the_app_keeps_running() {
+    let mut app = app();
+    type_text(&mut app, ":nope now");
+    enter(&mut app);
+    assert!(app.running());
+    assert_eq!(app.message.as_deref(), Some("not a command: nope now"));
+    assert_eq!(app.status, None);
+}
+
+#[test]
+fn a_bad_command_does_not_hide_why_kuna_failed() {
+    let mut app = app();
+    app.update(Msg::Functions(Err(kuna::Error::NotOnPath)))
+        .expect("updates");
+    let why = app.status.clone();
+    type_text(&mut app, ":help");
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("not a command: help"));
+    assert_eq!(app.status, why);
+    assert!(why.is_some());
+}
+
+#[test]
+fn a_late_answer_from_kuna_does_not_erase_a_command_message() {
+    let mut app = app();
+    type_text(&mut app, ":nope");
+    enter(&mut app);
+    app.update(answer(&["main"], Some("repaired the header")))
+        .expect("updates");
+    assert_eq!(app.message.as_deref(), Some("not a command: nope"));
+    assert_eq!(app.status.as_deref(), Some("repaired the header"));
+}
+
+#[test]
+fn the_next_key_clears_the_message() {
+    let mut app = app();
+    type_text(&mut app, ":nope");
+    enter(&mut app);
+    assert!(app.message.is_some());
+    type_text(&mut app, "j");
+    assert_eq!(app.message, None);
+}
+
+#[test]
+fn a_blank_command_says_nothing() {
+    let mut app = app();
+    type_text(&mut app, ":   ");
+    enter(&mut app);
+    assert_eq!(app.message, None);
+    assert!(app.running());
+}
+
+#[test]
+fn escape_closes_a_prompt_without_running_it() {
+    let mut app = app();
+    type_text(&mut app, ":q");
+    app.update(press(KeyCode::Esc)).expect("updates");
+    assert_eq!(app.keymap.prompt(), None);
+    assert!(app.running());
+}
+
+#[test]
+fn q_is_text_inside_a_prompt() {
+    let mut app = app();
+    type_text(&mut app, ":qq");
+    assert!(app.running());
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("not a command: qq"));
+}
+
+#[test]
+fn ctrl_c_in_a_prompt_closes_it_and_a_second_one_quits() {
+    let mut app = app();
+    let ctrl_c = || {
+        key(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        )
+    };
+    type_text(&mut app, ":ab");
+    app.update(ctrl_c()).expect("updates");
+    assert!(app.running());
+    assert_eq!(app.keymap.prompt(), None);
+    app.update(ctrl_c()).expect("updates");
+    assert!(!app.running());
+}
+
+#[test]
+fn motions_are_silent_until_the_views_exist() {
+    let mut app = app();
+    type_text(&mut app, "5jggGzzma'a");
+    assert!(app.running());
+    assert_eq!(
+        (app.status.as_deref(), app.message.as_deref()),
+        (None, None)
+    );
+    assert!(matches!(app.functions, Functions::Loading));
+}
+
+#[test]
+fn searches_views_and_follow_say_they_are_not_available_yet() {
+    let mut app = app();
+    type_text(&mut app, "/foo");
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("not available yet"));
+    type_text(&mut app, "j");
+    assert_eq!(app.message, None);
+    type_text(&mut app, "gd");
+    assert_eq!(app.message.as_deref(), Some("not available yet"));
+    type_text(&mut app, "j");
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("not available yet"));
     assert!(app.running());
 }
 
