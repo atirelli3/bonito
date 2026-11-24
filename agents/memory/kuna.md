@@ -18,6 +18,24 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
 - [WHY] Only `decompile-graph` and `.streaming` carry a schema version. Parse leniently (ignore unknown fields,
   `Option` for optional ones) and warn when `kuna --version` differs from `kuna-version`.
 
+## Driving kuna safely (src/kuna.rs)
+- [WHY] The analysed binary is only ever an argument to kuna, never the program, and always an absolute path (a
+  relative `-x` could be read as a flag). bonito sends addresses as selectors (`0x201140 --addr`), never a name taken
+  from the binary.
+- [WHY] Everything kuna prints that traces back to the binary (names, aliases, messages, mnemonics, C text, stderr) is
+  attacker-controlled: it is cleaned as it is parsed (`Text` / `Code` in `src/kuna/text.rs`, `printable` for stderr):
+  control characters and bidi overrides become spaces, names and messages are capped. Never add a string field to the
+  JSON types as a plain `String`.
+- [WHY] kuna exits 0 and prints loader repairs on stderr ("ELF section table unusable"): the answer is degraded.
+  `Reply.notes` carries that stderr; the UI must show it. A mid-function address also decompiles with a note, and
+  `disassemble` of one has `target.name == None`.
+- [WHY] Parsing is strict on the keys bonito relies on (`functions`, `size`, `warnings`, `instructions`, `truncated`):
+  a kuna that renames one must fail loudly, not read as "0 functions". Unknown keys are ignored.
+- [WHY] Executable lookup: `--kuna` / `BONITO_KUNA` must exist or it is an error; `PATH` entries that are relative
+  are skipped (a `kuna` in a sample directory must never run) and non-executable files are skipped.
+- [WHY] `kuna functions` has no watchdog (`--max-fn-seconds` exists on `decompile*` only) and `run` has no timeout or
+  output cap yet: tracked in #32.
+
 ## kuna performance and sessions
 - [WHY] No persistent mode: `decomp_dbg` reads all of stdin before running (a batch runner, not a REPL), and there is
   no project cache. Every call reloads the image: seconds on small files, 80 s on a 147 MB one.

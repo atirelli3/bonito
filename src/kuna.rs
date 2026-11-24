@@ -10,8 +10,9 @@ use std::string::FromUtf8Error;
 use std::{env, fmt, fs, io};
 
 mod json;
+mod text;
 
-pub use json::Function;
+pub use json::{Decompiled, Disassembly, Function};
 
 /// The kuna binary's file name on this platform.
 const KUNA_EXE: &str = if cfg!(windows) { "kuna.exe" } else { "kuna" };
@@ -161,6 +162,24 @@ impl Kuna {
             .try_map(into_functions)
     }
 
+    /// The C text and warnings for the function at `address`.
+    pub fn decompile(&self, binary: &Path, address: u64) -> Result<Reply<Decompiled>, Error> {
+        let target = hex(address);
+        self.query("decompile", binary, &[target.as_str(), "--addr"])?
+            .try_map(into_decompiled)
+    }
+
+    /// The instructions from `address`: the whole function when one starts there, else to the end of the
+    /// function around it or 64 bytes. Check `target.name`: it is none when `address` is not a function start.
+    pub fn disassemble(&self, binary: &Path, address: u64) -> Result<Reply<Disassembly>, Error> {
+        let target = hex(address);
+        self.query(
+            "disassemble",
+            binary,
+            &[target.as_str(), "--addr", "--as", "code"],
+        )
+    }
+
     /// Runs `kuna <subcommand> <binary> <extra..> --json` and parses the document.
     fn query<T: DeserializeOwned>(
         &self,
@@ -203,6 +222,7 @@ fn resolve(
     let on_path = search_path
         .into_iter()
         .flat_map(env::split_paths)
+        .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(KUNA_EXE))
         .find(|candidate| is_executable(candidate))
         .ok_or(Error::NotOnPath)?;
@@ -253,6 +273,27 @@ fn query_args(subcommand: &str, binary: &Path, extra: &[&str]) -> Result<Vec<OsS
         .collect())
 }
 
+/// An address the way kuna reads it: `0x201140`.
+fn hex(address: u64) -> String {
+    format!("{address:#x}")
+}
+
+/// The one function of a `decompile` document, or the problem kuna reported for the document or the function.
+fn into_decompiled(document: json::Decompilation) -> Result<Decompiled, Error> {
+    if let Some(message) = document.error {
+        return Err(Error::Reported(printable(message.as_bytes())));
+    }
+    let function = document
+        .functions
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Reported("kuna returned no function".to_string()))?;
+    match function.error {
+        Some(message) => Err(Error::Reported(printable(message.as_bytes()))),
+        None => Ok(function),
+    }
+}
+
 /// Parses kuna's JSON text.
 fn parse<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
     serde_json::from_str(text).map_err(Error::Parse)
@@ -270,7 +311,10 @@ fn into_functions(document: json::Functions) -> Result<Vec<Function>, Error> {
 fn parse_version(output: &str) -> Result<String, Error> {
     match output.split_whitespace().collect::<Vec<_>>().as_slice() {
         ["kuna", version, ..] => Ok((*version).to_string()),
-        _ => Err(Error::NotKuna(output.trim().to_string())),
+        _ => Err(Error::NotKuna(text::single_line(
+            output.trim(),
+            STDERR_LIMIT,
+        ))),
     }
 }
 
@@ -301,12 +345,7 @@ where
 
 /// kuna's stderr can echo text from a hostile binary: keep it short, one line, free of control characters.
 fn printable(stderr: &[u8]) -> String {
-    let text: String = String::from_utf8_lossy(stderr)
-        .trim()
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .take(STDERR_LIMIT)
-        .collect();
+    let text = text::single_line(String::from_utf8_lossy(stderr).trim(), STDERR_LIMIT);
     if text.is_empty() {
         "(no message)".to_string()
     } else {
@@ -629,5 +668,110 @@ mod tests {
             parse::<json::Functions>("not json"),
             Err(Error::Parse(_))
         ));
+    }
+
+    #[test]
+    fn decompiles_a_function_by_address() {
+        let reply = real_kuna()
+            .decompile(&fixture("hello.elf"), 0x201140)
+            .expect("decompiles");
+        assert_eq!(reply.notes, None);
+        assert_eq!(reply.data.name, "main");
+        assert!(
+            reply
+                .data
+                .code
+                .as_deref()
+                .unwrap_or_default()
+                .contains("add(")
+        );
+    }
+
+    #[test]
+    fn decompiling_an_unmapped_address_is_a_failed_call() {
+        let error = real_kuna()
+            .decompile(&fixture("hello.elf"), 0x10)
+            .expect_err("unmapped");
+        assert!(error.to_string().contains("not mapped"), "{error}");
+    }
+
+    #[test]
+    fn disassembles_a_function_by_address() {
+        let reply = real_kuna()
+            .disassemble(&fixture("hello.elf"), 0x201140)
+            .expect("disassembles");
+        assert_eq!(reply.data.instructions.len(), 8);
+        assert!(reply.data.instructions.iter().any(|i| i.mnemonic == "CALL"));
+    }
+
+    #[test]
+    fn disassembling_an_unmapped_address_is_a_failed_call() {
+        let error = real_kuna()
+            .disassemble(&fixture("hello.elf"), 0x10)
+            .expect_err("unmapped");
+        assert!(error.to_string().contains("no bytes mapped"), "{error}");
+    }
+
+    #[test]
+    fn a_decompile_document_must_hold_exactly_one_function() {
+        let none: json::Decompilation = parse(r#"{"error":null,"functions":[]}"#).expect("parses");
+        assert!(matches!(into_decompiled(none), Err(Error::Reported(_))));
+        let failed: json::Decompilation =
+            parse(r#"{"error":"decompilation failed","functions":[]}"#).expect("parses");
+        let error = into_decompiled(failed).expect_err("reported");
+        assert!(
+            matches!(&error, Error::Reported(m) if m == "decompilation failed"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_function_that_failed_is_reported_not_returned() {
+        let text = r#"{"error":null,"functions":[{"name":"f","address":16,"code":null,"error":"too big","warnings":[]}]}"#;
+        let error = into_decompiled(parse(text).expect("parses")).expect_err("reported");
+        assert!(
+            matches!(&error, Error::Reported(m) if m == "too big"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_disassembly_says_whether_it_starts_at_a_function() {
+        let kuna = real_kuna();
+        let at_start = kuna
+            .disassemble(&fixture("hello.elf"), 0x201140)
+            .expect("lists")
+            .data;
+        assert_eq!(at_start.target.name.as_deref(), Some("main"));
+        assert_eq!((at_start.start, at_start.end), (0x201140, 0x201160));
+        let inside = kuna
+            .disassemble(&fixture("hello.elf"), 0x201144)
+            .expect("lists")
+            .data;
+        assert_eq!(inside.target.name, None);
+    }
+
+    #[test]
+    fn decompiling_inside_a_function_comes_back_with_kunas_note() {
+        let reply = real_kuna()
+            .decompile(&fixture("hello.elf"), 0x201144)
+            .expect("decompiles");
+        let note = reply.notes.expect("kuna notes the address is interior");
+        assert!(note.contains("interior to main"), "{note}");
+    }
+
+    #[test]
+    fn a_relative_search_path_entry_is_never_searched() {
+        let dir = TempDir(PathBuf::from("target/bonito-relative-path-test"));
+        fs::create_dir_all(&dir.0).expect("temp dir");
+        dir.touch_exe(KUNA_EXE);
+        let result = resolve(None, None, Some(dir.0.as_os_str()));
+        assert!(matches!(result, Err(Error::NotOnPath)), "{result:?}");
+    }
+
+    #[test]
+    fn output_that_is_not_kuna_is_capped() {
+        let error = parse_version(&"x".repeat(5000)).expect_err("not kuna");
+        assert!(error.to_string().len() < 2 * STDERR_LIMIT, "{error}");
     }
 }
