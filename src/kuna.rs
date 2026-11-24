@@ -2,11 +2,16 @@
 // ponytail: the TUI calls this from item #6 on; until then only the tests do.
 #![allow(dead_code)]
 
-use std::ffi::OsStr;
+use serde::de::DeserializeOwned;
+use std::ffi::{OsStr, OsString};
 use std::path::{self, Path, PathBuf};
 use std::process::Command;
 use std::string::FromUtf8Error;
 use std::{env, fmt, fs, io};
+
+mod json;
+
+pub use json::Function;
 
 /// The kuna binary's file name on this platform.
 const KUNA_EXE: &str = if cfg!(windows) { "kuna.exe" } else { "kuna" };
@@ -47,6 +52,10 @@ pub enum Error {
     BadOutput(FromUtf8Error),
     /// `--version` did not print what kuna prints.
     NotKuna(String),
+    /// kuna's JSON did not have the shape bonito expects.
+    Parse(serde_json::Error),
+    /// kuna exited cleanly but reported a problem in its document.
+    Reported(String),
 }
 
 impl fmt::Display for Error {
@@ -73,6 +82,8 @@ impl fmt::Display for Error {
                 write!(f, "kuna wrote output that is not valid UTF-8: {source}")
             }
             Self::NotKuna(output) => write!(f, "that is not kuna: {output:?}"),
+            Self::Parse(source) => write!(f, "kuna's JSON is not what bonito expects: {source}"),
+            Self::Reported(message) => write!(f, "kuna reported: {message}"),
         }
     }
 }
@@ -82,6 +93,7 @@ impl std::error::Error for Error {
         match self {
             Self::Spawn { source, .. } => Some(source),
             Self::BadOutput(source) => Some(source),
+            Self::Parse(source) => Some(source),
             _ => None,
         }
     }
@@ -92,6 +104,31 @@ impl std::error::Error for Error {
 pub struct Kuna {
     path: PathBuf,
     version: String,
+}
+
+/// A parsed kuna answer, with what kuna said on stderr while still succeeding (loader repairs, fallbacks).
+/// Show the notes: they mean the answer may be degraded.
+#[derive(Debug)]
+pub struct Reply<T> {
+    pub data: T,
+    pub notes: Option<String>,
+}
+
+impl<T> Reply<T> {
+    /// Converts the data, keeping the notes.
+    fn try_map<U>(self, convert: impl FnOnce(T) -> Result<U, Error>) -> Result<Reply<U>, Error> {
+        Ok(Reply {
+            data: convert(self.data)?,
+            notes: self.notes,
+        })
+    }
+}
+
+/// What a successful kuna call printed: stdout, and stderr if it had anything to say.
+#[derive(Debug)]
+struct Output {
+    stdout: String,
+    notes: Option<String>,
 }
 
 /// Finds kuna (`--kuna`, then `$BONITO_KUNA`, then `PATH`) and asks it for its version.
@@ -109,13 +146,33 @@ pub fn locate(explicit: Option<&Path>) -> Result<Kuna, Error> {
 impl Kuna {
     /// Runs `kuna --version` on `path`.
     fn probe(path: PathBuf) -> Result<Self, Error> {
-        let version = parse_version(&run(&path, ["--version"])?)?;
+        let version = parse_version(&run(&path, ["--version"])?.stdout)?;
         Ok(Self { path, version })
     }
 
     /// The version kuna reported.
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// Every function kuna finds in `binary`, in address order.
+    pub fn functions(&self, binary: &Path) -> Result<Reply<Vec<Function>>, Error> {
+        self.query("functions", binary, &["--sort", "addr"])?
+            .try_map(into_functions)
+    }
+
+    /// Runs `kuna <subcommand> <binary> <extra..> --json` and parses the document.
+    fn query<T: DeserializeOwned>(
+        &self,
+        subcommand: &str,
+        binary: &Path,
+        extra: &[&str],
+    ) -> Result<Reply<T>, Error> {
+        let output = run(&self.path, query_args(subcommand, binary, extra)?)?;
+        Ok(Reply {
+            data: parse(&output.stdout)?,
+            notes: output.notes,
+        })
     }
 
     /// A message for the status line when kuna is not the version bonito was tested with.
@@ -186,6 +243,29 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
+/// The arguments of a query, with the binary as an absolute path so kuna can't read it as a flag.
+fn query_args(subcommand: &str, binary: &Path, extra: &[&str]) -> Result<Vec<OsString>, Error> {
+    let binary = absolute(binary, "binary")?;
+    Ok([OsString::from(subcommand), binary.into_os_string()]
+        .into_iter()
+        .chain(extra.iter().map(|arg| OsString::from(*arg)))
+        .chain([OsString::from("--json")])
+        .collect())
+}
+
+/// Parses kuna's JSON text.
+fn parse<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
+    serde_json::from_str(text).map_err(Error::Parse)
+}
+
+/// The functions of a `functions` document, or the problem kuna reported in it.
+fn into_functions(document: json::Functions) -> Result<Vec<Function>, Error> {
+    match document.error {
+        Some(message) => Err(Error::Reported(printable(message.as_bytes()))),
+        None => Ok(document.functions),
+    }
+}
+
 /// Reads the version out of `kuna --version` (`kuna 1.1005`).
 fn parse_version(output: &str) -> Result<String, Error> {
     match output.split_whitespace().collect::<Vec<_>>().as_slice() {
@@ -194,9 +274,9 @@ fn parse_version(output: &str) -> Result<String, Error> {
     }
 }
 
-/// Runs `kuna args` and returns its stdout. The analysed binary is only ever an argument, never the program.
-// ponytail: no timeout: calls run on worker threads and kuna has its own watchdog (--max-fn-seconds).
-fn run<I, S>(kuna: &Path, args: I) -> Result<String, Error>
+/// Runs `kuna args`. The analysed binary is only ever an argument, never the program.
+// ponytail: no timeout, output cap or cancellation yet (#32): `kuna functions` has no watchdog of its own.
+fn run<I, S>(kuna: &Path, args: I) -> Result<Output, Error>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -214,7 +294,9 @@ where
             stderr: printable(&output.stderr),
         });
     }
-    String::from_utf8(output.stdout).map_err(Error::BadOutput)
+    let notes = (!output.stderr.trim_ascii().is_empty()).then(|| printable(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).map_err(Error::BadOutput)?;
+    Ok(Output { stdout, notes })
 }
 
 /// kuna's stderr can echo text from a hostile binary: keep it short, one line, free of control characters.
@@ -235,7 +317,6 @@ fn printable(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
 
     /// A temp directory that removes itself.
     struct TempDir(PathBuf);
@@ -440,11 +521,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn run_returns_stdout_on_success() {
-        assert_eq!(
-            run(Path::new("/bin/sh"), ["-c", "printf hello"]).expect("runs"),
-            "hello"
-        );
+    fn run_returns_stdout_and_no_note_on_a_quiet_success() {
+        let output = run(Path::new("/bin/sh"), ["-c", "printf hello"]).expect("runs");
+        assert_eq!((output.stdout.as_str(), output.notes), ("hello", None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_keeps_what_kuna_says_on_stderr_when_it_still_succeeds() {
+        let output = run(
+            Path::new("/bin/sh"),
+            ["-c", "printf out; echo '[kuna] repaired' >&2"],
+        )
+        .expect("runs");
+        assert_eq!(output.stdout, "out");
+        assert_eq!(output.notes.as_deref(), Some("[kuna] repaired"));
+    }
+
+    #[test]
+    fn a_damaged_binary_comes_back_with_kunas_note() {
+        let dir = TempDir::new("damaged");
+        let mut bytes = fs::read(fixture("hello.elf")).expect("fixture");
+        bytes[40..48].copy_from_slice(&0xdead_0000_u64.to_le_bytes());
+        let damaged = dir.0.join("damaged.elf");
+        fs::write(&damaged, bytes).expect("damaged copy");
+        let reply = real_kuna().functions(&damaged).expect("still lists");
+        let note = reply.notes.expect("kuna said it repaired the header");
+        assert!(note.contains("section table"), "{note}");
     }
 
     #[test]
@@ -456,5 +559,75 @@ mod tests {
     fn printable_truncates_and_names_an_empty_message() {
         assert_eq!(printable("x".repeat(1000).as_bytes()).len(), STDERR_LIMIT);
         assert_eq!(printable(b"  \n"), "(no message)");
+    }
+
+    fn real_kuna() -> Kuna {
+        locate(Some(&pinned_kuna_path())).expect("run scripts/kuna.sh first")
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn lists_the_functions_of_the_fixture_in_address_order() {
+        let reply = real_kuna().functions(&fixture("hello.elf")).expect("lists");
+        let (functions, note) = (reply.data, reply.notes);
+        assert_eq!(note, None);
+        let names: Vec<&str> = functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["square", "add", "main", "_start"]);
+        assert!(
+            functions
+                .windows(2)
+                .all(|pair| pair[0].address < pair[1].address)
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_binary_is_a_failed_call() {
+        let error = real_kuna()
+            .functions(&fixture("hello.c"))
+            .expect_err("not a binary");
+        assert!(matches!(error, Error::Failed { .. }), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("not in recognized object file format"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_error_in_the_document_is_surfaced() {
+        let text = r#"{"error":"packed image","functions":[]}"#;
+        let error = into_functions(parse(text).expect("parses")).expect_err("reported");
+        assert!(
+            matches!(&error, Error::Reported(message) if message == "packed image"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_binary_argument_is_absolute_so_it_is_never_read_as_a_flag() {
+        let args = query_args("functions", Path::new("-x"), &["--sort", "addr"]).expect("builds");
+        assert_eq!(
+            args.first().map(|arg| arg.as_os_str()),
+            Some(OsStr::new("functions"))
+        );
+        assert!(Path::new(&args[1]).is_absolute(), "{args:?}");
+        assert_eq!(
+            args.last().map(|arg| arg.as_os_str()),
+            Some(OsStr::new("--json"))
+        );
+    }
+
+    #[test]
+    fn a_document_that_is_not_json_is_a_parse_error() {
+        assert!(matches!(
+            parse::<json::Functions>("not json"),
+            Err(Error::Parse(_))
+        ));
     }
 }

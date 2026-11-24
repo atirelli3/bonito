@@ -1,0 +1,48 @@
+{
+  "binary": "tests/fixtures/hello.elf",
+  "count": 4,
+  "total": 4,
+  "error": null,
+  "functions": [
+    {
+      "name": "square",
+      "address": 2101536,
+      "address_hex": "0x201120",
+      "aliases": [
+        "sub_201120"
+      ],
+      "object_location": null,
+      "size": 16
+    },
+    {
+      "name": "add",
+      "address": 2101552,
+      "address_hex": "0x201130",
+      "aliases": [
+        "sub_201130"
+      ],
+      "object_location": null,
+      "size": 16
+    },
+    {
+      "name": "main",
+      "address": 2101568,
+      "address_hex": "0x201140",
+      "aliases": [
+        "sub_201140"
+      ],
+      "object_location": null,
+      "size": 32
+    },
+    {
+      "name": "_start",
+      "address": 2101600,
+      "address_hex": "0x201160",
+      "aliases": [
+        "sub_201160"
+      ],
+      "object_location": null,
+      "size": 34
+    }
+  ]
+}
