@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "rust-anything": { "type": "stdio", "command": "rust-anything", "args": ["mcp"] }
+  }
+}
