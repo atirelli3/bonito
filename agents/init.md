@@ -25,7 +25,7 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
 ## Layout
 | Path | What |
 |---|---|
-| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop, the kuna worker; `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `kuna.rs` (+ `kuna/json.rs`, `text.rs`, `tests.rs`) the kuna driver |
+| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `kuna.rs` (+ `kuna/json.rs`, `text.rs`, `tests.rs`) the kuna driver |
 | `tests/` | `smoke.rs` drives the built binary through every path that ends before the terminal is taken over; `fixtures/` = `hello.elf` (+ `hello.c`) and recorded kuna JSON |
 | `kuna-version` | the tested kuna version (line 1) + a sha256 per platform |
 | `scripts/gate.sh` | push gate = CI `gate` job: fetches kuna, then fmt, clippy, tests + coverage ≥ 80% |

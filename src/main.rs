@@ -6,6 +6,7 @@ mod keymap;
 mod kuna;
 mod ui;
 mod view;
+mod worker;
 
 use app::App;
 use args::Command;
@@ -68,7 +69,7 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     require_terminal()?;
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    let worker = app::spawn_worker(Arc::clone(&kuna), binary.clone(), queue, tx.clone())?;
+    let worker = worker::spawn(Arc::clone(&kuna), binary.clone(), queue, tx.clone())?;
     let (version, warning) = (kuna.version().to_string(), kuna.version_warning());
     let _stop = Stop {
         kuna,
