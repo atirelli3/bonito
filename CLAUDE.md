@@ -146,7 +146,8 @@ load-bearing until it says otherwise.
 - `src/main.rs` stays thin (args, terminal setup/restore, run); logic lives in modules with unit tests; `tests/`
   drives the built binary. No `unwrap`/`expect`/`panic!` outside tests: errors return as `Result` to `main`, which
   restores the terminal before printing them.
-- bonito opens untrusted binaries: never execute them, only hand them to kuna.
-- How bonito drives kuna (cargo git dependency on its crates vs the `kuna` CLI) is decided in the first plan and
-  recorded in `agents/memory/decisions.md`.
+- bonito opens untrusted binaries: never execute them, only hand them to kuna, or to REA's static-only commands (the
+  allow-list in `agents/memory/kuna.md`).
+- bonito drives kuna by spawning its CLI and parsing `--json`, never as a cargo dependency; REA is an optional second
+  engine driven the same way (`agents/memory/kuna.md`, `decisions.md`).
 - `main` takes changes only through PRs; never push to it directly, never force-push anywhere.
