@@ -289,6 +289,39 @@ fn a_terminal_that_cannot_be_read_is_an_error() {
     assert!(app.update(failure).is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn a_signal_stops_the_app_with_an_error_naming_it() {
+    let error = app().update(Msg::Signal("SIGTERM")).expect_err("stops");
+    assert_eq!(error.to_string(), "stopped by SIGTERM");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hangup_reaches_the_loop_as_a_message() {
+    let (tx, rx) = mpsc::channel();
+    spawn_signals(tx).expect("starts");
+    signal_hook::low_level::raise(signal_hook::consts::SIGHUP).expect("raises");
+    let msg = rx.recv_timeout(std::time::Duration::from_secs(2));
+    assert!(matches!(msg, Ok(Msg::Signal("SIGHUP"))));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_repeated_signal_reaches_the_loop_too() {
+    let (tx, rx) = mpsc::channel();
+    spawn_signals(tx).expect("starts");
+    for _ in 0..2 {
+        signal_hook::low_level::raise(signal_hook::consts::SIGHUP).expect("raises");
+        let msg = rx.recv_timeout(std::time::Duration::from_secs(2));
+        assert!(
+            matches!(msg, Ok(Msg::Signal("SIGHUP"))),
+            "{:?}",
+            msg.is_ok()
+        );
+    }
+}
+
 fn screen(terminal: &Terminal<TestBackend>) -> String {
     let buffer = terminal.backend().buffer();
     buffer.content().iter().map(|cell| cell.symbol()).collect()

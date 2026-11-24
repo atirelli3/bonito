@@ -36,7 +36,8 @@ fn main() -> ExitCode {
         Ok(Command::Open { binary, kuna }) => match open(binary, kuna) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("bonito: {error}");
+                // ponytail: `eprintln!` panics on a hung-up terminal (SIGHUP); the exit code already says it failed.
+                let _ = writeln!(io::stderr(), "bonito: {error}");
                 ExitCode::from(EXIT_FAILURE)
             }
         },
@@ -77,6 +78,10 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
         worker: Some(worker),
     };
     // ponytail: the worker ends on `Kuna::cancel`, whatever order these drop in.
+    // ponytail: only now, when the loop is about to read them: until here a signal keeps its default (fatal) action,
+    // so a hung `kuna --version` can still be killed.
+    #[cfg(unix)]
+    app::spawn_signals(tx.clone())?;
     let mut app = App::new(binary, version, warning, requests);
     interact(&mut app, tx, &rx)
 }
