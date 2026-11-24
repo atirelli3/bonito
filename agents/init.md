@@ -11,16 +11,21 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
 - Bootstrap done: crate `bonito` 0.1.0 (hello world + `tests/smoke.rs`), workflow rules (`CLAUDE.md`), CI
   (`ci.yml`) and release (`release.yml`) pipelines, public repo `atirelli3/bonito` with a `main` ruleset, type labels,
   Projects board **bonito** https://github.com/users/atirelli3/projects/1 (Todo / In Progress / In Review / Done).
-- Renamed tuna → bonito (#3, merged). v1 plan approved 2026-11-24; its items are on the board (below).
-- No feature code yet. Open: #1 `chore: add a LICENSE` (Todo, waits on the user's choice; blocks #18, #19).
+- Renamed tuna → bonito (#3). v1 plan approved 2026-11-24; its items are on the board (below). Design recorded (#4).
+- kuna driver done (#5): bonito finds, version-checks and drives the pinned kuna (`functions`, `decompile`,
+  `disassemble` by address). No UI yet: `main.rs` still prints "Hello, world!".
+- Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); review follow-ups #32 (timeout),
+  #33 (kuna sandbox), #34 (move kuna tests: `src/kuna.rs` is 795 of 800 lines), #35 (pin Actions by SHA).
 
 ## Layout
 | Path | What |
 |---|---|
-| `src/` | the crate; `main.rs` stays thin |
-| `tests/` | integration tests that drive the built binary |
-| `scripts/gate.sh` | push gate = CI `gate` job: fmt, clippy, tests + coverage ≥ 80% |
-| `scripts/task.sh` | board: list open issues / set one issue's status |
+| `src/` | the crate; `main.rs` stays thin; `kuna.rs` (+ `kuna/json.rs`, `kuna/text.rs`) = the kuna driver |
+| `tests/` | integration tests that drive the built binary; `fixtures/` = `hello.elf` (+ `hello.c`) and recorded kuna JSON |
+| `kuna-version` | the tested kuna version (line 1) + a sha256 per platform |
+| `scripts/gate.sh` | push gate = CI `gate` job: fetches kuna, then fmt, clippy, tests + coverage ≥ 80% |
+| `scripts/kuna.sh` | fetch the pinned kuna into `target/kuna/`, verified against `kuna-version` |
+| `scripts/task.sh` | board: list open issues / set one issue's status (~6 GraphQL calls: pace it) |
 | `.github/workflows/` | `ci.yml` (PRs + `main`), `release.yml` (`v*.*.*` tags) |
 | `.claude/` | settings (`opusplan`), Haiku agents `search` / `tests` / `docs`, the `tests` hook |
 | `.mcp.json` | the rust-anything MCP server |
@@ -44,8 +49,8 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | # | Item |
 |---|---|
 | #3 | rename → bonito (done) |
-| #4 | record the v1 design |
-| #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` |
+| #4 | record the v1 design (done) |
+| #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` (done) |
 | #6 | TUI shell · #7 vim keymap · #8 core views (**MVP**) |
 | #9 | xrefs, strings, crypto, blobs, hex, p-code, summary · #10 options (`catalog`, `:set`, `:mode`) |
 | #11 | whole-binary cache (`decompile-project --stream`) · #12 call graph · #13 unpack + FID |
@@ -53,7 +58,8 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
 
 ## Open work / next steps
-1. #4 → #5 kuna driver → #6–#8 MVP (first release candidate); `v0.1.0` only on the user's `release`.
+1. #34 (test move) → #6 TUI shell (with #32, #33) → #7 → #8 = MVP (first release candidate); `v0.1.0` only on the
+   user's `release`.
 2. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
 3. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
 4. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).

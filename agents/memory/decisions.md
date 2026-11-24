@@ -24,6 +24,9 @@ fact the code doesn't say.
 - [USER-YES] (2026-11-24) The project is renamed tuna → bonito (repo, crate, binary, board): `tuna` is Red Hat's IRQ
   tool in Arch `extra` and nixpkgs (`/usr/bin/tuna`), so AUR and Nix couldn't carry it; `bonito` is free on Arch, AUR,
   nixpkgs and crates.io. The two entries above keep the old name as history.
+- [WHY] `scripts/task.sh` costs ~6 GraphQL calls and `gh issue create --parent` more: a burst of them trips GitHub's
+  secondary rate limit ("API rate limit already exceeded") even while `gh api rate_limit` shows budget. Pace calls
+  ≥10 s apart, never retry in a tight loop, and wait a few minutes once refused.
 
 ## Product scope (v1)
 - [USER-YES] (2026-11-24) Goal: a Rust TUI with every user-facing kuna feature, interactive, vim motions throughout
@@ -37,6 +40,11 @@ fact the code doesn't say.
   co-install the pinned kuna. AUR and Nix wait on the LICENSE (#1) and, for AUR, an account + `AUR_SSH_PRIVATE_KEY`.
 - [WHY] ratatui `try_init` / `try_restore`, not `init` / `restore`: the latter panic, and the project rule is no panics.
 - [WHY] No clap and no async runtime: one positional + `--kuna PATH`, std threads + `mpsc` for the kuna / REA jobs.
+- [WHY] `src/kuna.rs` carries `#![allow(dead_code)]` (a `// ponytail:` marker) until #6 calls it: remove it then.
+  `#[expect]` would fail the test build (the lint doesn't fire there), and under `-D warnings` an unused `pub use`
+  is an error: re-export a type only when something names it.
+- [WHY] Unit tests that need a child process run `/bin/sh -c '…'` (Unix only), never a script file they just wrote:
+  write-then-exec races with other test threads' fork (ETXTBSY).
 
 ## rust-anything
 - [WHY] rust-anything is a CLI + MCP server + skill, not a library: the dependency is the required tool
@@ -46,3 +54,8 @@ fact the code doesn't say.
 - [WHY] Coverage counts the binary that `tests/smoke.rs` runs (cargo-llvm-cov instruments `CARGO_BIN_EXE_*`): keep a
   test that runs the binary, or `main.rs` drags line coverage under 80%.
 - [WHY] `release.yml` calls `ci.yml` (`workflow_call`) first: a tag never ships a build that CI hasn't passed.
+- [WHY] `gh pr checks --watch` stops on a transient GraphQL error and reports nothing useful. Wait on
+  `gh api repos/<repo>/commits/<sha>/check-runs` instead: all 3 checks (`gate`, `test (macos-latest)`,
+  `test (windows-latest)`) present and no `conclusion` null (they appear a few seconds after the push).
+- [WHY] Every CI job fetches the pinned kuna first (`gate.sh` on Linux, a `bash scripts/kuna.sh` step on macOS and
+  Windows): the unit tests drive the real kuna on `tests/fixtures/hello.elf` and fail, never skip, when it is missing.
