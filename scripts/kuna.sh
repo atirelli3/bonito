@@ -32,7 +32,7 @@ sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum 
 asset="kuna-v$version-$platform.$ext"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL -o "$tmp/$asset" "https://github.com/Noelo-Lab/kuna/releases/download/v$version/$asset"
+curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 -o "$tmp/$asset" "https://github.com/Noelo-Lab/kuna/releases/download/v$version/$asset"
 [[ $(sha256 "$tmp/$asset") == "$pinned" ]] || { echo "kuna.sh: $asset does not match the sha256 pinned in kuna-version" >&2; exit 1; }
 
 rm -rf "$dir"
