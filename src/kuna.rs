@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io, thread};
 
+mod export;
 mod graph;
 mod json;
 mod reference;
@@ -385,7 +386,15 @@ impl Kuna {
 
     /// Runs kuna with `args` under the session's limits.
     fn output(&self, args: Vec<OsString>) -> Result<Output, Error> {
-        let limits = Limits::new(&self.stop, self.scratch.path());
+        self.output_for(args, KUNA_TIMEOUT)
+    }
+
+    /// Runs kuna with `args`, killing it after `timeout`.
+    fn output_for(&self, args: Vec<OsString>, timeout: Duration) -> Result<Output, Error> {
+        let limits = Limits {
+            timeout,
+            ..Limits::new(&self.stop, self.scratch.path())
+        };
         run(&self.path, args, &limits)
     }
 
