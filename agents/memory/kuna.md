@@ -135,3 +135,30 @@ Verified 2026-11-25 against kuna 1.1005 on `tests/fixtures/{hello,data}.elf` (re
   other data (a gzip blob gives `()-JUH`), with no function.
 - [WHY] `functions --summary`: `reachable_from_entry` is `null` with no entry point or a packed image; `warnings` is an
   array of strings that kuna also prints on stderr (said once); a failure exits 1, so `error` is read only on exit 0.
+
+## Options, modes and docs (#10)
+Verified 2026-11-25 against kuna 1.1005 (recorded subsets in `tests/fixtures/{catalog-sample,modes,docs-topics}.json`).
+- [WHY] `catalog`, `modes` and `docs` take no binary and need no image (milliseconds): bonito loads them once on a thread
+  of their own (`worker::spawn_reference`), not on the worker, so the worker's message order stays what its tests pin.
+- [WHY] A catalog row is `{option, values, default, tier (core|analysis|transform), summary, use_when, ..}`, every one of
+  the 243 `values` an array of strings; an entry like `<directory>` means free text (`objcsdk`: `["<directory>","off"]`).
+  `destructive_as_default`, `strength`, `rewind` exist and are unused. `modes --json` is `{modes:[{name, summary,
+  automatic, overrides:[{option,value}]}]}`: auto (automatic, sets `ctypes on`), reliable (no overrides), aggressive (46),
+  fast (5). `docs --json` lists 5 topics (cli 320 KB, options 905 KB, agents, phases, modes); `docs TOPIC` is plain text;
+  `docs --all` (1.27 MB) is not used. Summaries can be 12 000 characters long: `Text` cuts them at 1024, unmarked.
+- [WHY] `--option NAME VALUE` (repeatable) and `--mode M` are on `decompile` (also `xrefs`, `strings`…), **not on
+  `functions`**: bonito sends them to `decompile` only. `--mode auto` is the same as omitting `--mode` (byte-identical
+  output), so `:mode auto` clears the mode. Option names and mode names are case-sensitive and kuna refuses a wrong
+  case loudly (`option NameStyle: Unknown option (did you mean "namestyle"?)`, exit 2); an unknown name exits 2, a bad value
+  exits 1 (`option namestyle: namestyle must be "angr" or "ghidra"`), an unknown mode exits 2 listing the known ones.
+  Explicit `--option` values win over the mode preset; mode + options all apply together.
+- [WHY] On `hello.elf`'s `main`: `namestyle ghidra` renames `v1` to `xVar1`, `--mode reliable` prints `int4 main(void)`,
+  `realtypes off` adds `xunknown4`: the real-kuna tests use these.
+- [WHY] Two catalog options take paths: `objcsdk <directory>` reads `.h` files under it and `kernelcache-boot <path>` reads
+  a file or directory; neither writes. bonito refuses a value starting with `//` or containing `://` (a Windows UNC path
+  would make kuna open a share), and any value starting with `-` (so a negative number cannot be set).
+- [WHY] kuna's stderr is cut to 300 characters (`STDERR_LIMIT`): a progress line before `error: option …` could hide the
+  reason. No such line was seen.
+- [WHY] On Windows `kuna docs TOPIC` prints CRLF line endings (found by the Windows CI job; Linux and macOS print LF).
+  `text::multiline` reads a CRLF as a newline and still turns a lone CR into a space, or every doc line ends in a stray
+  space. Only the Windows job can show this: run plain-text kuna output through `multiline`, never `str::lines` alone.

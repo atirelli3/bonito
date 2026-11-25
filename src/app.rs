@@ -2,7 +2,8 @@
 
 use crate::jumps::{Jumps, Spot};
 use crate::keymap::{self, Action, Keymap, Motion, View};
-use crate::kuna::{self, Function, Reply};
+use crate::kuna::{self, Function, Reference, Reply};
+use crate::options::Shared;
 use crate::ui;
 use crate::view::Pane;
 use ratatui::Terminal;
@@ -13,6 +14,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -38,10 +40,14 @@ pub enum Msg {
     Input(io::Result<Event>),
     /// The answer to the functions request.
     Functions(Result<Reply<Vec<Function>>, kuna::Error>),
+    /// The answer to the reference request: kuna's options, modes and docs.
+    Reference(Result<Reply<Reference>, kuna::Error>),
     /// The answer to a `Request`: the lines of that view of the function at `address`.
     Code {
         view: View,
         address: u64,
+        /// The generation of the options the worker read before making it: a decompile made with older ones is stale.
+        generation: u64,
         answer: Result<Reply<Vec<String>>, kuna::Error>,
     },
     /// SIGTERM or SIGHUP arrived: its name.
@@ -89,6 +95,9 @@ pub fn view_name(view: View) -> &'static str {
         View::Strings => "strings",
         View::Crypto => "crypto",
         View::Blobs => "blobs",
+        View::Catalog => "catalog",
+        View::Modes => "modes",
+        View::Docs => "docs",
         View::CallGraph => "call graph",
         View::Hex => "hex",
         View::PCode => "p-code",
@@ -106,7 +115,13 @@ fn per_function(view: View) -> bool {
         | View::Hex
         | View::PCode
         | View::CallGraph => true,
-        View::Strings | View::Crypto | View::Blobs | View::Summary => false,
+        View::Strings
+        | View::Crypto
+        | View::Blobs
+        | View::Summary
+        | View::Catalog
+        | View::Modes
+        | View::Docs => false,
     }
 }
 
@@ -128,6 +143,8 @@ pub struct App {
     pub kuna_version: String,
     /// The functions of the binary.
     pub functions: Functions,
+    /// kuna's options, modes and docs.
+    pub reference: Knowledge,
     /// What kuna said while still succeeding, or why the last request failed.
     pub status: Option<String>,
     /// What the last key or command answered ("not a command: x"); the next key clears it.
@@ -148,6 +165,8 @@ pub struct App {
     marks: HashMap<(Option<Request>, char), Spot>,
     search: Option<Query>,
     requests: Sender<Request>,
+    /// The options a decompile runs with, shared with the worker.
+    shared: Arc<Shared>,
     /// The height of the panes' text, as drawn last.
     rows: usize,
     running: bool,
@@ -165,6 +184,8 @@ impl App {
             binary,
             kuna_version,
             functions: Functions::Loading,
+            reference: Knowledge::Loading,
+            shared: Arc::default(),
             status: None,
             message: None,
             warning,
@@ -209,6 +230,9 @@ impl App {
             | View::Strings
             | View::Crypto
             | View::Blobs
+            | View::Catalog
+            | View::Modes
+            | View::Docs
             | View::CallGraph
             | View::Hex
             | View::PCode
@@ -250,11 +274,13 @@ impl App {
                 self.functions = Functions::Failed;
                 self.status = Some(error.to_string());
             }
+            Msg::Reference(answer) => self.on_reference(answer),
             Msg::Code {
                 view,
                 address,
+                generation,
                 answer,
-            } => self.answered(Request { view, address }, answer),
+            } => self.on_code(Request { view, address }, generation, answer),
             #[cfg(unix)]
             Msg::Signal(name) => return Err(io::Error::other(format!("stopped by {name}"))),
         }
@@ -635,6 +661,11 @@ impl App {
         if let Some(Loaded::Ready(pane, _)) = self.views.get_mut(&request) {
             return pane.keep_visible(rows);
         }
+        self.ask(request);
+    }
+
+    /// Marks `request` as loading and asks the worker for it; a worker that has stopped is a failed view.
+    fn ask(&mut self, request: Request) {
         self.views.insert(request, Loaded::Loading);
         if self.requests.send(request).is_err() {
             let why = "the kuna worker has stopped".to_string();
@@ -648,7 +679,8 @@ impl App {
         kuna::single_line(&name.to_string_lossy(), NAME_LIMIT)
     }
 
-    /// Runs a `:` command: `q` `q!` `quit`, `e NAME|0xADDR` (`edit`), `crypto` and `blobs`.
+    /// Runs a `:` command: `q` `q!` `quit`, `e NAME|0xADDR` (`edit`), `crypto` `blobs` `catalog` `modes`,
+    /// `docs [TOPIC]`, `set` `set!` `mode` and `mode!`.
     fn command(&mut self, line: &str) {
         let line = line.trim();
         let (name, argument) = line
@@ -667,6 +699,13 @@ impl App {
                 }
                 Err(why) => self.message = Some(why),
             },
+            ("set", args) => self.set_command(args, false),
+            ("set!", args) => self.set_command(args, true),
+            ("mode", name) => self.mode_command(name, false),
+            ("mode!", name) => self.mode_command(name, true),
+            ("catalog", "") => self.open_reference(View::Catalog),
+            ("modes", "") => self.open_reference(View::Modes),
+            ("docs", topic) => self.open_docs(topic),
             ("crypto", "") => self.open_view(View::Crypto),
             ("blobs", "") => self.open_view(View::Blobs),
             ("", _) => {}
@@ -751,6 +790,10 @@ pub fn spawn_signals(tx: Sender<Msg>) -> io::Result<JoinHandle<()>> {
         }
     })
 }
+
+mod options;
+
+pub use options::Knowledge;
 
 #[cfg(test)]
 mod tests;

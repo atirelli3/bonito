@@ -13,15 +13,18 @@ use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io, thread};
 
 mod json;
+mod reference;
 mod scratch;
 mod text;
 
+use crate::options::Options;
 use scratch::Scratch;
 
 pub use json::{
     Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Located, Op, Pcode, Strings,
     Summary, Varnode, Xrefs,
 };
+pub use reference::{CatalogRow, Mode, Reference, Topic};
 pub use text::{Text, is_unsafe, single_line};
 
 /// The kuna binary's file name on this platform.
@@ -289,10 +292,18 @@ impl Kuna {
             .try_map(into_functions)
     }
 
-    /// The C text and warnings for the function at `address`.
-    pub fn decompile(&self, binary: &Path, address: u64) -> Result<Reply<Decompiled>, Error> {
+    /// The C text and warnings for the function at `address`, decompiled with `options`.
+    pub fn decompile(
+        &self,
+        binary: &Path,
+        address: u64,
+        options: &Options,
+    ) -> Result<Reply<Decompiled>, Error> {
         let target = hex(address);
-        self.query("decompile", binary, &[target.as_str(), "--addr"])?
+        let flags = options.args();
+        let mut extra = vec![target.as_str(), "--addr"];
+        extra.extend(flags.iter().map(String::as_str));
+        self.query("decompile", binary, &extra)?
             .try_map(into_decompiled)
     }
 

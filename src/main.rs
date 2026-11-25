@@ -5,6 +5,7 @@ mod args;
 mod jumps;
 mod keymap;
 mod kuna;
+mod options;
 mod ui;
 mod view;
 mod worker;
@@ -52,14 +53,18 @@ fn main() -> ExitCode {
 struct Stop {
     kuna: Arc<Kuna>,
     worker: Option<JoinHandle<()>>,
+    reference: Option<JoinHandle<()>>,
 }
 
 impl Drop for Stop {
     fn drop(&mut self) {
         self.kuna.cancel();
-        if let Some(worker) = self.worker.take() {
-            // ponytail: a worker that panicked already sent its error to the loop, which is gone: nothing to add.
-            let _ = worker.join();
+        for thread in [self.worker.take(), self.reference.take()]
+            .into_iter()
+            .flatten()
+        {
+            // ponytail: a thread that panicked already sent its error to the loop, which is gone: nothing to add.
+            let _ = thread.join();
         }
     }
 }
@@ -71,18 +76,22 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     require_terminal()?;
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    let worker = worker::spawn(Arc::clone(&kuna), binary.clone(), queue, tx.clone())?;
     let (version, warning) = (kuna.version().to_string(), kuna.version_warning());
-    let _stop = Stop {
-        kuna,
+    // ponytail: the app owns the options a decompile runs with and the worker reads the app's, so they cannot differ.
+    let mut app = App::new(binary.clone(), version, warning, requests);
+    let worker = worker::spawn_with(Arc::clone(&kuna), binary, app.shared(), queue, tx.clone())?;
+    let mut _stop = Stop {
+        kuna: Arc::clone(&kuna),
         worker: Some(worker),
+        reference: None,
     };
+    // ponytail: started once `Stop` exists, so a failed spawn still cancels kuna and joins the worker.
+    _stop.reference = Some(worker::spawn_reference(kuna, tx.clone())?);
     // ponytail: the worker ends on `Kuna::cancel`, whatever order these drop in.
     // ponytail: only now, when the loop is about to read them: until here a signal keeps its default (fatal) action,
     // so a hung `kuna --version` can still be killed.
     #[cfg(unix)]
     app::spawn_signals(tx.clone())?;
-    let mut app = App::new(binary, version, warning, requests);
     interact(&mut app, tx, &rx)
 }
 

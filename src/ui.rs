@@ -189,6 +189,8 @@ fn status_line(app: &App) -> String {
     parts.extend(app.loading());
     parts.extend([&app.message, &app.status].into_iter().flatten().cloned());
     parts.extend(app.view_note().map(str::to_string));
+    parts.extend(app.options_note());
+    parts.extend(app.reference_note());
     parts.extend(app.warning.clone());
     parts.push(format!("{name} · kuna {}", app.kuna_version));
     single_line(&parts.join(" · "), STATUS_LIMIT)
@@ -299,6 +301,27 @@ mod tests {
             .expect("updates");
         let screen = screen(&app, 40, 8);
         assert!(screen.contains("failed · kuna not found"), "{screen}");
+    }
+
+    #[test]
+    fn the_options_in_use_are_shown_on_the_status_line_while_any_is_set() {
+        let mut app = app("hello.elf");
+        assert!(!status_line(&app).contains("options:"));
+        type_text(&mut app, ":set! namestyle ghidra");
+        enter(&mut app);
+        assert!(status_line(&app).contains("decompile options: namestyle=ghidra"));
+    }
+
+    #[test]
+    fn a_reference_kuna_could_not_load_is_shown_on_the_status_line() {
+        let mut app = app("hello.elf");
+        let failed = Msg::Reference(Err(crate::kuna::Error::Cancelled));
+        app.update(failed).expect("updates");
+        let screen = screen(&app, 200, 12);
+        assert!(
+            screen.contains("options and docs could not be loaded"),
+            "{screen}"
+        );
     }
 
     #[test]
@@ -494,6 +517,7 @@ mod tests {
         app.update(Msg::Code {
             view: View::Decompile,
             address: 4_198_720,
+            generation: 0,
             answer,
         })
         .expect("updates");
@@ -572,6 +596,7 @@ mod tests {
         let failed = Msg::Code {
             view: View::Decompile,
             address: 4_198_720,
+            generation: 0,
             answer,
         };
         app.update(failed).expect("updates");
@@ -632,6 +657,7 @@ mod tests {
         let msg = Msg::Code {
             view: View::Disassembly,
             address: 4_198_720,
+            generation: 0,
             answer,
         };
         app.update(msg).expect("updates");
@@ -650,6 +676,7 @@ mod tests {
         let msg = Msg::Code {
             view: View::Decompile,
             address: 4_198_720,
+            generation: 0,
             answer: Ok(reply),
         };
         app.update(msg).expect("updates");

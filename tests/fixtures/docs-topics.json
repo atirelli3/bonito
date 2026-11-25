@@ -1,0 +1,32 @@
+[
+  {
+    "topic": "cli",
+    "title": "The `kuna` CLI reference",
+    "summary": "Every subcommand, flag, exit code and JSON schema of the kuna binary.",
+    "bytes": 320032
+  },
+  {
+    "topic": "options",
+    "title": "kuna option catalog",
+    "summary": "Generated catalog of every --option, by tier, with a symptom index from bad output to the flip that fixes it.",
+    "bytes": 905570
+  },
+  {
+    "topic": "agents",
+    "title": "AGENTS.md — working in and with kuna",
+    "summary": "The repo rulebook: what kuna is, how it is laid out, the build/test gates, and the doc map.",
+    "bytes": 16262
+  },
+  {
+    "topic": "phases",
+    "title": "Decompiler phases",
+    "summary": "The P0-P9 phase model on one screen: what each phase computes and where the feedback edges run.",
+    "bytes": 7778
+  },
+  {
+    "topic": "modes",
+    "title": "Decompiler modes",
+    "summary": "The --mode auto|reliable|aggressive|fast presets and the input-size thresholds auto selects on.",
+    "bytes": 21065
+  }
+]

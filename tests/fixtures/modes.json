@@ -1,0 +1,239 @@
+{
+  "modes": [
+    {
+      "name": "auto",
+      "summary": "Select aggressive below 500 KiB, reliable from 500 KiB up to 2 MiB, and fast at 2 MiB or larger, using the input file size; every size spells core types as C (ctypes on).",
+      "automatic": true,
+      "overrides": [
+        {
+          "option": "ctypes",
+          "value": "on"
+        }
+      ]
+    },
+    {
+      "name": "reliable",
+      "summary": "The shipped, well-tested defaults -- the safe, stable baseline with no extra transform overrides.",
+      "automatic": false,
+      "overrides": []
+    },
+    {
+      "name": "aggressive",
+      "summary": "Maximum recovery: turn on every off-by-default quality, structuring, and analysis pass except v850indirectbranch and dwarf_lines. Slower and more speculative (may over-recover); best for readability and the benchmark ceiling, not for guaranteed faithfulness.",
+      "automatic": false,
+      "overrides": [
+        {
+          "option": "switchmodbound",
+          "value": "on"
+        },
+        {
+          "option": "constselectjump",
+          "value": "on"
+        },
+        {
+          "option": "switchguardbound",
+          "value": "on"
+        },
+        {
+          "option": "unrolledguard",
+          "value": "on"
+        },
+        {
+          "option": "globalarrayanchor",
+          "value": "on"
+        },
+        {
+          "option": "opaquepredicate",
+          "value": "on"
+        },
+        {
+          "option": "sparcstructret",
+          "value": "on"
+        },
+        {
+          "option": "v850indirectbranch",
+          "value": "on"
+        },
+        {
+          "option": "regionedgeorder",
+          "value": "on"
+        },
+        {
+          "option": "returndup",
+          "value": "on"
+        },
+        {
+          "option": "rettriangle",
+          "value": "on"
+        },
+        {
+          "option": "iteexpr",
+          "value": "on"
+        },
+        {
+          "option": "devectorize",
+          "value": "on"
+        },
+        {
+          "option": "ctypes",
+          "value": "on"
+        },
+        {
+          "option": "partialaccess",
+          "value": "on"
+        },
+        {
+          "option": "stackstruct",
+          "value": "on"
+        },
+        {
+          "option": "voidtailreturn",
+          "value": "on"
+        },
+        {
+          "option": "importdata",
+          "value": "on"
+        },
+        {
+          "option": "cortexmpriv",
+          "value": "on"
+        },
+        {
+          "option": "x64syscall",
+          "value": "on"
+        },
+        {
+          "option": "ptrdepthcap",
+          "value": "on"
+        },
+        {
+          "option": "calltargettype",
+          "value": "on"
+        },
+        {
+          "option": "libcnames",
+          "value": "on"
+        },
+        {
+          "option": "armfloatreturn",
+          "value": "on"
+        },
+        {
+          "option": "armfloatargs",
+          "value": "on"
+        },
+        {
+          "option": "listing",
+          "value": "on"
+        },
+        {
+          "option": "fast_funcdisc",
+          "value": "on"
+        },
+        {
+          "option": "eh_frame_full",
+          "value": "on"
+        },
+        {
+          "option": "funcstart_patterns",
+          "value": "on"
+        },
+        {
+          "option": "addrtable",
+          "value": "on"
+        },
+        {
+          "option": "operand_refs",
+          "value": "on"
+        },
+        {
+          "option": "widestrings32",
+          "value": "on"
+        },
+        {
+          "option": "fid",
+          "value": "on"
+        },
+        {
+          "option": "flirt",
+          "value": "on"
+        },
+        {
+          "option": "rtti",
+          "value": "on"
+        },
+        {
+          "option": "itaniumrtti",
+          "value": "on"
+        },
+        {
+          "option": "aif",
+          "value": "strict"
+        },
+        {
+          "option": "cortexmvectors",
+          "value": "on"
+        },
+        {
+          "option": "ptrentry",
+          "value": "on"
+        },
+        {
+          "option": "tailcallentry",
+          "value": "on"
+        },
+        {
+          "option": "poolentry",
+          "value": "on"
+        },
+        {
+          "option": "objc",
+          "value": "on"
+        },
+        {
+          "option": "swiftmetadata",
+          "value": "on"
+        },
+        {
+          "option": "cfstrings",
+          "value": "on"
+        },
+        {
+          "option": "pdb",
+          "value": "on"
+        },
+        {
+          "option": "macho-arm64e",
+          "value": "on"
+        }
+      ]
+    },
+    {
+      "name": "fast",
+      "summary": "Speed-first whole-binary analysis: replace exhaustive Listing, prologue-pattern, and AIF discovery with rooted recursive function discovery plus conservative pointer validation; core types spell as C (ctypes on).",
+      "automatic": false,
+      "overrides": [
+        {
+          "option": "listing",
+          "value": "off"
+        },
+        {
+          "option": "funcstart_patterns",
+          "value": "off"
+        },
+        {
+          "option": "aif",
+          "value": "off"
+        },
+        {
+          "option": "fast_funcdisc",
+          "value": "on"
+        },
+        {
+          "option": "ctypes",
+          "value": "on"
+        }
+      ]
+    }
+  ]
+}

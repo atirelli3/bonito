@@ -27,6 +27,7 @@ fn next_lines(rx: &Receiver<Msg>, view: View, address: u64) -> Vec<String> {
             view: got,
             address: at,
             answer: Ok(reply),
+            ..
         } if (got, at) == (view, address) => reply.data,
         Msg::Code { answer, .. } => panic!("not the answer asked for: {answer:?}"),
         _ => panic!("expected a code answer"),
@@ -580,6 +581,63 @@ fn a_summary_without_an_entry_point_says_none() {
     let text = SUMMARY.replace(r#""entry": {"#, r#""entry": null, "was_entry": {"#);
     let summary = serde_json::from_str(&text).expect("parses");
     assert_eq!(summary_reply(plain(summary)).data[0], "entry: none");
+}
+
+/// The lines and the generation of the next decompile answer.
+fn next_decompile(rx: &Receiver<Msg>) -> (Vec<String>, u64) {
+    match rx.recv().expect("an answer") {
+        Msg::Code {
+            view: View::Decompile,
+            generation,
+            answer: Ok(reply),
+            ..
+        } => (reply.data, generation),
+        _ => panic!("expected a decompile answer"),
+    }
+}
+
+#[test]
+fn toggling_an_option_changes_what_the_worker_decompiles_and_says_which_generation_it_used() {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let shared = Arc::new(Shared::default());
+    let worker = spawn_with(
+        Arc::new(pinned_kuna()),
+        hello(),
+        Arc::clone(&shared),
+        queue,
+        tx,
+    )
+    .expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    let has = |lines: &[String], text: &str| lines.iter().any(|line| line.contains(text));
+    requests
+        .send(request(View::Decompile, 0x201140))
+        .expect("sends");
+    let (plain, first) = next_decompile(&rx);
+    assert!(has(&plain, "v1") && !has(&plain, "xVar1"), "{plain:?}");
+    let ghidra = Options::default()
+        .with_option("namestyle", "ghidra")
+        .expect("valid");
+    let second = shared.replace(ghidra.clone());
+    requests
+        .send(request(View::Decompile, 0x201140))
+        .expect("sends");
+    let (renamed, generation) = next_decompile(&rx);
+    assert!(
+        has(&renamed, "xVar1") && !has(&renamed, "v1 "),
+        "{renamed:?}"
+    );
+    assert_eq!((generation, generation > first), (second, true));
+    let reliable = ghidra.with_mode("reliable").expect("valid");
+    shared.replace(reliable);
+    requests
+        .send(request(View::Decompile, 0x201140))
+        .expect("sends");
+    let (both, _) = next_decompile(&rx);
+    assert!(has(&both, "int4 main") && has(&both, "xVar1"), "{both:?}");
+    drop(requests);
+    worker.join().expect("ends when nobody can ask any more");
 }
 
 #[test]

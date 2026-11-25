@@ -394,6 +394,7 @@ fn code(view: View, address: u64, lines: &[&str], notes: Option<&str>) -> Msg {
     Msg::Code {
         view,
         address,
+        generation: 0,
         answer: Ok(Reply {
             data: lines.iter().map(|line| line.to_string()).collect(),
             notes: notes.map(str::to_string),
@@ -405,6 +406,7 @@ fn failed(view: View, address: u64) -> Msg {
     Msg::Code {
         view,
         address,
+        generation: 0,
         answer: Err(kuna::Error::Cancelled),
     }
 }
@@ -698,6 +700,413 @@ fn a_view_of_one_function_from_a_binary_wide_view_says_when_no_function_is_known
         app.message.as_deref(),
         Some("the functions are still loading")
     );
+}
+
+#[test]
+fn colon_catalog_colon_modes_and_colon_docs_open_kunas_own_views_at_zero() {
+    let commands = [
+        (":catalog", View::Catalog),
+        (":modes", View::Modes),
+        (":docs", View::Docs),
+    ];
+    for (line, view) in commands {
+        let (mut app, queue) = three();
+        type_text(&mut app, line);
+        enter(&mut app);
+        assert_eq!(queue.try_recv(), Ok(asked(view, 0)), "{line}");
+        let name = app.shown.as_ref().map(|shown| shown.name.as_str());
+        assert_eq!(name, Some("kuna"), "{line}");
+    }
+}
+
+/// Tells `app` the catalog (compareform, namestyle, objcsdk) and the modes (auto, reliable, aggressive, fast).
+fn know_the_options(app: &mut App) {
+    let catalog = include_str!("../../tests/fixtures/catalog-sample.json");
+    let modes = include_str!("../../tests/fixtures/modes.json");
+    let modes: serde_json::Value = serde_json::from_str(modes).expect("modes json");
+    let reference = Reference {
+        catalog: serde_json::from_str(catalog).expect("catalog"),
+        modes: serde_json::from_value(modes["modes"].clone()).expect("modes"),
+        topics: Vec::new(),
+    };
+    let reply = Reply {
+        data: reference,
+        notes: None,
+    };
+    app.update(Msg::Reference(Ok(reply))).expect("updates");
+}
+
+/// `alpha` decompiled and shown, as after Enter in the list.
+fn decompiled(app: &mut App, queue: &Receiver<Request>) {
+    enter(app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, ALPHA)));
+    let answer = code(View::Decompile, ALPHA, &["int main(void)"], None);
+    let current = app.shared.generation();
+    app.update(from_generation(current, answer))
+        .expect("updates");
+}
+
+/// `msg`, an answer from the worker, made with the options of `generation`.
+fn from_generation(generation: u64, msg: Msg) -> Msg {
+    match msg {
+        Msg::Code {
+            view,
+            address,
+            answer,
+            ..
+        } => Msg::Code {
+            view,
+            address,
+            generation,
+            answer,
+        },
+        other => other,
+    }
+}
+
+#[test]
+fn set_changes_the_options_and_asks_again_for_the_decompile_shown() {
+    let (mut app, queue) = three();
+    know_the_options(&mut app);
+    decompiled(&mut app, &queue);
+    colon(&mut app, "set namestyle ghidra");
+    assert_eq!(app.message.as_deref(), Some("namestyle = ghidra"));
+    assert_eq!(app.options().to_string(), "namestyle=ghidra");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, ALPHA)));
+    assert!(matches!(app.current(), Some((_, Loaded::Loading))));
+}
+
+#[test]
+fn a_change_drops_the_cached_decompiles_and_keeps_the_other_views() {
+    let (mut app, queue) = three();
+    know_the_options(&mut app);
+    decompiled(&mut app, &queue);
+    let old = || Loaded::Failed("old".to_string());
+    app.views.insert(asked(View::Decompile, BETA), old());
+    app.views.insert(asked(View::Xrefs, BETA), old());
+    colon(&mut app, "set namestyle ghidra");
+    assert!(!app.views.contains_key(&asked(View::Decompile, BETA)));
+    assert!(app.views.contains_key(&asked(View::Xrefs, BETA)));
+}
+
+#[test]
+fn an_answer_made_with_older_options_is_dropped_and_other_views_stand() {
+    let (mut app, queue) = three();
+    know_the_options(&mut app);
+    decompiled(&mut app, &queue);
+    colon(&mut app, "set namestyle ghidra");
+    queue.try_recv().expect("asked again");
+    let stale = code(View::Decompile, ALPHA, &["stale"], None);
+    app.update(from_generation(0, stale)).expect("updates");
+    assert!(matches!(app.current(), Some((_, Loaded::Loading))));
+    let fresh = code(View::Decompile, ALPHA, &["fresh"], None);
+    app.update(from_generation(1, fresh)).expect("updates");
+    let Some((_, Loaded::Ready(pane, _))) = app.current() else {
+        panic!("the fresh answer is shown");
+    };
+    assert_eq!(pane.lines()[0], "fresh");
+    let xrefs = code(View::Xrefs, ALPHA, &["x"], None);
+    app.update(from_generation(0, xrefs)).expect("updates");
+    let kept = app.views.get(&asked(View::Xrefs, ALPHA));
+    assert!(matches!(kept, Some(Loaded::Ready(..))));
+}
+
+#[test]
+fn a_change_made_from_the_list_keeps_the_focus_there_and_a_view_that_is_not_a_decompile_is_not_asked_again()
+ {
+    let (mut app, queue) = three();
+    know_the_options(&mut app);
+    type_text(&mut app, "gr");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Xrefs, ALPHA)));
+    colon(&mut app, "set namestyle ghidra");
+    assert!(queue.try_recv().is_err(), "xrefs do not depend on options");
+    ctrl_w(&mut app, 'h');
+    decompiled(&mut app, &queue);
+    ctrl_w(&mut app, 'h');
+    colon(&mut app, "set compareform canonical");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, ALPHA)));
+    assert_eq!(app.focus, Focus::List);
+}
+
+#[test]
+fn set_checks_the_catalog_and_says_what_is_wrong() {
+    let (mut app, queue) = three();
+    know_the_options(&mut app);
+    let tries = [
+        (
+            "set nosuch x",
+            "no such option: nosuch (see :catalog; :set! sends it anyway)",
+        ),
+        (
+            "set namestyle bogus",
+            "namestyle must be one of: angr, ghidra (:set! sends it anyway)",
+        ),
+        (
+            "set namestyle -x",
+            "option value \"-x\": must not start with -",
+        ),
+        ("set a b c", "usage: :set NAME VALUE, :set NAME&, :set NAME"),
+    ];
+    for (line, said) in tries {
+        colon(&mut app, line);
+        assert_eq!(app.message.as_deref(), Some(said), "{line}");
+        assert!(app.options().is_default(), "{line}");
+    }
+    colon(&mut app, "set objcsdk /some/sdk");
+    assert_eq!(app.message.as_deref(), Some("objcsdk = /some/sdk"));
+    assert!(queue.try_recv().is_err(), "no decompile is shown");
+}
+
+#[test]
+fn set_bang_skips_the_catalog_but_not_the_character_check() {
+    let (mut app, _queue) = three();
+    know_the_options(&mut app);
+    colon(&mut app, "set! nosuch x");
+    colon(&mut app, "set! namestyle bogus");
+    assert_eq!(app.options().to_string(), "nosuch=x namestyle=bogus");
+    colon(&mut app, "set! n -x");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("option value \"-x\": must not start with -")
+    );
+    assert_eq!(app.options().to_string(), "nosuch=x namestyle=bogus");
+}
+
+#[test]
+fn set_before_the_catalog_is_known_says_so_but_set_bang_works() {
+    let (mut app, _queue) = three();
+    colon(&mut app, "set namestyle ghidra");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("the reference is still loading (:set! sends it anyway)")
+    );
+    assert!(app.options().is_default());
+    colon(&mut app, "set! namestyle ghidra");
+    assert_eq!(app.options().to_string(), "namestyle=ghidra");
+}
+
+#[test]
+fn set_names_are_checked_everywhere_and_mode_is_not_an_option() {
+    let (mut app, _queue) = three();
+    know_the_options(&mut app);
+    let tries = [
+        (
+            "set namestyle=ghidra",
+            "option name \"namestyle=ghidra\": only letters, digits and _ are allowed",
+        ),
+        ("set &", "option name is empty"),
+        (
+            "set namestyle=ghidra&",
+            "option name \"namestyle=ghidra\": only letters, digits and _ are allowed",
+        ),
+        (
+            "set! mode x",
+            "option name \"mode\": set the mode with :mode",
+        ),
+    ];
+    for (line, said) in tries {
+        colon(&mut app, line);
+        assert_eq!(app.message.as_deref(), Some(said), "{line}");
+    }
+    assert!(app.options().is_default());
+}
+
+#[test]
+fn a_value_that_would_open_a_network_path_is_refused_even_by_set_bang() {
+    let (mut app, _queue) = three();
+    know_the_options(&mut app);
+    for line in [
+        "set objcsdk //host/share",
+        "set! objcsdk //host/share",
+        "set! x http://h/p",
+    ] {
+        colon(&mut app, line);
+        let said = app.message.clone().unwrap_or_default();
+        assert!(said.contains("network"), "{line}: {said}");
+    }
+    assert!(app.options().is_default());
+}
+
+#[test]
+fn mode_bang_sets_a_mode_without_the_list_but_not_without_the_character_check() {
+    let (mut app, _queue) = three();
+    colon(&mut app, "mode! reliable");
+    assert_eq!(app.options().to_string(), "mode=reliable");
+    colon(&mut app, "mode! -x");
+    assert_eq!(app.options().to_string(), "mode=reliable");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("mode \"-x\": must not start with -")
+    );
+}
+
+#[test]
+fn set_lists_shows_and_resets_options() {
+    let (mut app, queue) = three();
+    know_the_options(&mut app);
+    colon(&mut app, "set");
+    assert_eq!(app.message.as_deref(), Some("no options set"));
+    colon(&mut app, "set namestyle ghidra");
+    colon(&mut app, "set");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("decompile options: namestyle=ghidra")
+    );
+    colon(&mut app, "set namestyle");
+    assert_eq!(app.message.as_deref(), Some("namestyle = ghidra"));
+    colon(&mut app, "set compareform");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("compareform is original (default)")
+    );
+    colon(&mut app, "set nosuch");
+    assert_eq!(app.message.as_deref(), Some("nosuch is not set"));
+    colon(&mut app, "set namestyle&");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("namestyle reset to its default")
+    );
+    assert!(app.options().is_default());
+    colon(&mut app, "set namestyle&");
+    assert_eq!(app.message.as_deref(), Some("namestyle is not set"));
+    assert!(queue.try_recv().is_err());
+}
+
+#[test]
+fn setting_what_is_already_set_asks_for_nothing() {
+    let (mut app, queue) = three();
+    know_the_options(&mut app);
+    decompiled(&mut app, &queue);
+    colon(&mut app, "set namestyle ghidra");
+    queue.try_recv().expect("asked once");
+    let generation = app.shared.generation();
+    colon(&mut app, "set namestyle ghidra");
+    assert_eq!(app.message.as_deref(), Some("namestyle = ghidra"));
+    assert!(queue.try_recv().is_err());
+    assert_eq!(app.shared.generation(), generation);
+}
+
+#[test]
+fn mode_shows_sets_checks_and_clears_with_auto() {
+    let (mut app, _queue) = three();
+    know_the_options(&mut app);
+    colon(&mut app, "mode");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("mode: auto (kuna picks by input size)")
+    );
+    colon(&mut app, "mode reliable");
+    assert_eq!(app.message.as_deref(), Some("mode = reliable"));
+    assert_eq!(app.options().to_string(), "mode=reliable");
+    colon(&mut app, "mode");
+    assert_eq!(app.message.as_deref(), Some("mode: reliable"));
+    colon(&mut app, "mode bogus");
+    assert_eq!(
+        app.message.as_deref(),
+        Some(
+            "no such mode: bogus (known: auto, reliable, aggressive, fast; :mode! sends it anyway)"
+        )
+    );
+    assert_eq!(app.options().to_string(), "mode=reliable");
+    colon(&mut app, "mode auto");
+    assert!(app.options().is_default());
+}
+
+#[test]
+fn mode_before_the_modes_are_known_says_so() {
+    let (mut app, _queue) = three();
+    colon(&mut app, "mode reliable");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("the reference is still loading (:mode! sends it anyway)")
+    );
+}
+
+/// Tells `app` kuna's topics: cli, options, agents, phases, modes.
+fn know_the_topics(app: &mut App) {
+    let topics = include_str!("../../tests/fixtures/docs-topics.json");
+    let reference = Reference {
+        catalog: Vec::new(),
+        modes: Vec::new(),
+        topics: serde_json::from_str(topics).expect("topics"),
+    };
+    let reply = Reply {
+        data: reference,
+        notes: None,
+    };
+    app.update(Msg::Reference(Ok(reply))).expect("updates");
+}
+
+#[test]
+fn colon_docs_with_a_topic_opens_that_document_by_its_number() {
+    let (mut app, queue) = three();
+    know_the_topics(&mut app);
+    type_text(&mut app, ":docs options");
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::Docs, 2)));
+    let name = app.shown.as_ref().map(|shown| shown.name.as_str());
+    assert_eq!(name, Some("options"));
+}
+
+#[test]
+fn colon_docs_with_a_topic_kuna_does_not_have_lists_the_ones_it_has() {
+    let (mut app, queue) = three();
+    know_the_topics(&mut app);
+    type_text(&mut app, ":docs nope");
+    enter(&mut app);
+    assert_eq!(
+        app.message.as_deref(),
+        Some("no topic: nope (known: cli, options, agents, phases, modes)")
+    );
+    assert!(queue.try_recv().is_err(), "nothing was asked for");
+}
+
+#[test]
+fn what_kuna_said_loading_its_reference_and_a_failure_to_load_it_reach_the_status_line() {
+    let mut app = app();
+    assert_eq!(app.reference_note(), None);
+    let reference = Reference {
+        catalog: Vec::new(),
+        modes: Vec::new(),
+        topics: Vec::new(),
+    };
+    let said = Reply {
+        data: reference,
+        notes: Some("a loader repair".to_string()),
+    };
+    app.update(Msg::Reference(Ok(said))).expect("updates");
+    assert_eq!(app.reference_note().as_deref(), Some("a loader repair"));
+    let failed = Msg::Reference(Err(kuna::Error::Reported("kuna docs: bad".to_string())));
+    app.update(failed).expect("updates");
+    let note = app.reference_note().unwrap_or_default();
+    assert_eq!(
+        note,
+        "kuna's options and docs could not be loaded: kuna reported: kuna docs: bad"
+    );
+    // The functions answer must not wipe it: it has a field of its own.
+    app.update(answer(&["main"], None)).expect("updates");
+    assert_eq!(app.reference_note().as_deref(), Some(note.as_str()));
+}
+
+#[test]
+fn colon_docs_with_a_topic_says_when_the_reference_is_not_there_yet_or_failed() {
+    let (mut app, queue) = three();
+    type_text(&mut app, ":docs options");
+    enter(&mut app);
+    assert_eq!(
+        app.message.as_deref(),
+        Some("the reference is still loading")
+    );
+    let failed = Msg::Reference(Err(kuna::Error::Cancelled));
+    app.update(failed).expect("updates");
+    type_text(&mut app, ":docs options");
+    enter(&mut app);
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("the reference could not be loaded: "),
+        "{message}"
+    );
+    assert!(queue.try_recv().is_err(), "nothing was asked for");
 }
 
 #[test]

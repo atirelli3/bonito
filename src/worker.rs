@@ -6,6 +6,7 @@ use crate::kuna::{
     self, Blobs, Crypto, Decompiled, Disassembly, Hexdump, Kuna, Located, Op, Pcode, Reply,
     Strings, Summary, Varnode, Xrefs,
 };
+use crate::options::{Options, Shared};
 use std::io;
 use std::iter::once;
 use std::panic::{self, AssertUnwindSafe};
@@ -37,13 +38,26 @@ const PANIC_LIMIT: usize = 200;
 /// How often an idle worker checks whether kuna was cancelled.
 const IDLE: Duration = Duration::from_millis(100);
 
-/// Lists the functions of `binary` on a worker thread, then answers `requests` until every sender is gone or
-/// kuna is cancelled. Of the requests waiting, only the newest of each view is answered: the user has moved on
-/// from the rest. A panic in a kuna call is sent as an error.
-// ponytail: a call in flight is not cancelled by a newer request, only by `Kuna::cancel` (#11 caches instead).
+/// `spawn_with` and no options: a worker for the tests.
+#[cfg(test)]
 pub fn spawn(
     kuna: Arc<Kuna>,
     binary: PathBuf,
+    requests: Receiver<Request>,
+    tx: Sender<Msg>,
+) -> io::Result<JoinHandle<()>> {
+    spawn_with(kuna, binary, Arc::default(), requests, tx)
+}
+
+/// Lists the functions of `binary` on a worker thread, then answers `requests` until every sender is gone or
+/// kuna is cancelled. Of the requests waiting, only the newest of each view is answered: the user has moved on
+/// from the rest. A panic in a kuna call is sent as an error. A decompile runs with the options `shared` holds when
+/// its request is taken up, and its answer says which generation of them that was.
+// ponytail: a call in flight is not cancelled by a newer request, only by `Kuna::cancel` (#11 caches instead).
+pub fn spawn_with(
+    kuna: Arc<Kuna>,
+    binary: PathBuf,
+    shared: Arc<Shared>,
     requests: Receiver<Request>,
     tx: Sender<Msg>,
 ) -> io::Result<JoinHandle<()>> {
@@ -60,10 +74,12 @@ pub fn spawn(
                 Err(_) => return,
             };
             for Request { view, address } in newest_per_view(oldest, &requests) {
-                let answer = guarded(|| lines_of(&kuna, &binary, view, address));
+                let (options, generation) = shared.current();
+                let answer = guarded(|| lines_of(&kuna, &binary, view, address, &options));
                 let msg = Msg::Code {
                     view,
                     address,
+                    generation,
                     answer,
                 };
                 if tx.send(msg).is_err() {
@@ -108,9 +124,10 @@ fn lines_of(
     binary: &Path,
     view: View,
     address: u64,
+    options: &Options,
 ) -> Result<Reply<Vec<String>>, kuna::Error> {
     match view {
-        View::Decompile => decompile_reply(kuna.decompile(binary, address)?),
+        View::Decompile => decompile_reply(kuna.decompile(binary, address, options)?),
         View::Disassembly => Ok(disassembly_reply(kuna.disassemble(binary, address)?)),
         View::Xrefs => Ok(xrefs_reply(kuna.xrefs(binary, address)?)),
         View::Hex => Ok(hex_reply(kuna.hexdump(binary, address)?)),
@@ -119,6 +136,9 @@ fn lines_of(
         View::Crypto => Ok(crypto_reply(kuna.crypto(binary)?)),
         View::Blobs => Ok(blobs_reply(kuna.blobs(binary)?)),
         View::Summary => Ok(summary_reply(kuna.summary(binary)?)),
+        View::Catalog => Ok(catalog_reply(kuna.catalog()?)),
+        View::Modes => Ok(modes_reply(kuna.modes()?)),
+        View::Docs => docs_reply(kuna, address),
         // ponytail: #12 adds the call graph; nothing asks for it yet.
         View::CallGraph => Err(kuna::Error::Reported(format!(
             "the {view:?} view is not available in bonito yet"
@@ -575,6 +595,11 @@ fn short_pointers(data: &Xrefs) -> Option<String> {
         None => format!("stored pointers {coverage}"),
     })
 }
+
+mod reference;
+
+pub use reference::spawn as spawn_reference;
+use reference::{catalog_reply, docs_reply, modes_reply};
 
 #[cfg(test)]
 mod tests;
