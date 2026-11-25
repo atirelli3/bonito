@@ -18,7 +18,7 @@ mod text;
 
 use scratch::Scratch;
 
-pub use json::{Decompiled, Disassembly, Function, Xrefs};
+pub use json::{Decompiled, Disassembly, Function, Hexdump, Op, Pcode, Varnode, Xrefs};
 pub use text::{is_unsafe, single_line};
 
 /// The kuna binary's file name on this platform.
@@ -302,6 +302,20 @@ impl Kuna {
             binary,
             &[target.as_str(), "--addr", "--as", "code"],
         )
+    }
+
+    /// The bytes of the function at `address` (64 bytes when none starts there), sixteen to a row.
+    pub fn hexdump(&self, binary: &Path, address: u64) -> Result<Reply<Hexdump>, Error> {
+        let target = hex(address);
+        self.query("read", binary, &[target.as_str(), "--addr"])
+    }
+
+    /// The p-code of each instruction of the function at `address`, before any decompiler pass.
+    // ponytail: kuna exits 1 when an instruction does not lift and the partial listing on its stdout is dropped; the
+    // error shows kuna's stderr. Accept exit 1 with a parsable stdout if users want the part that lifted.
+    pub fn pcode(&self, binary: &Path, address: u64) -> Result<Reply<Pcode>, Error> {
+        let target = hex(address);
+        self.query("raw-pcode", binary, &[target.as_str(), "--addr"])
     }
 
     /// The references to the function at `address`: its callers, and the stored pointers that hold its address.

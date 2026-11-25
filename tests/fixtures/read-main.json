@@ -1,0 +1,60 @@
+{
+  "binary": "tests/fixtures/hello.elf",
+  "kind": "data",
+  "target": {
+    "name": "main",
+    "address": 2101568,
+    "address_hex": "0x201140"
+  },
+  "start": 2101568,
+  "start_hex": "0x201140",
+  "end": 2101600,
+  "end_hex": "0x201160",
+  "count": 2,
+  "bytes": 32,
+  "truncated": false,
+  "notes": [],
+  "hex": "50bf03000000e8d5ffffff89c7be0400000058e9d8ffffff0f1f840000000000",
+  "rows": [
+    {
+      "address": 2101568,
+      "address_hex": "0x201140",
+      "size": 16,
+      "bytes": "50bf03000000e8d5ffffff89c7be0400",
+      "ascii": "P..............."
+    },
+    {
+      "address": 2101584,
+      "address_hex": "0x201150",
+      "size": 16,
+      "bytes": "000058e9d8ffffff0f1f840000000000",
+      "ascii": "..X............."
+    }
+  ],
+  "fixups_coverage": "dynamic-relocations",
+  "fixups_reason": null,
+  "fixups": [],
+  "provenance": [
+    {
+      "start": 2101568,
+      "start_hex": "0x201140",
+      "end": 2101600,
+      "end_hex": "0x201160",
+      "size": 32,
+      "source": "file",
+      "file_offset": 320,
+      "file_offset_hex": "0x140",
+      "segment": {
+        "index": 2,
+        "name": null,
+        "start": 2101536,
+        "start_hex": "0x201120",
+        "size": 98,
+        "file_offset": 288,
+        "file_size": 98,
+        "permissions": "r-x"
+      },
+      "overlaps": []
+    }
+  ]
+}

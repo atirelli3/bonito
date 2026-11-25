@@ -679,6 +679,15 @@ fn gr_asks_for_the_callers_of_the_selected_function() {
 }
 
 #[test]
+fn gh_and_gp_ask_for_the_hex_and_the_p_code_of_the_selected_function() {
+    for (keys, view) in [("gh", View::Hex), ("gp", View::PCode)] {
+        let (mut app, queue) = three();
+        type_text(&mut app, keys);
+        assert_eq!(queue.try_recv(), Ok(asked(view, ALPHA)), "{keys}");
+    }
+}
+
+#[test]
 fn a_worker_that_is_gone_is_reported_not_waited_for() {
     let (mut app, queue) = three();
     drop(queue);

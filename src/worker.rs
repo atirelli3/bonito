@@ -2,7 +2,7 @@
 
 use crate::app::{Msg, Request};
 use crate::keymap::View;
-use crate::kuna::{self, Decompiled, Disassembly, Kuna, Reply, Xrefs};
+use crate::kuna::{self, Decompiled, Disassembly, Hexdump, Kuna, Op, Pcode, Reply, Varnode, Xrefs};
 use std::io;
 use std::iter::once;
 use std::panic::{self, AssertUnwindSafe};
@@ -110,10 +110,12 @@ fn lines_of(
         View::Decompile => decompile_reply(kuna.decompile(binary, address)?),
         View::Disassembly => Ok(disassembly_reply(kuna.disassemble(binary, address)?)),
         View::Xrefs => Ok(xrefs_reply(kuna.xrefs(binary, address)?)),
+        View::Hex => Ok(hex_reply(kuna.hexdump(binary, address)?)),
+        View::PCode => Ok(pcode_reply(kuna.pcode(binary, address)?)),
         // ponytail: #9 adds these; nothing asks for them yet.
-        View::Strings | View::CallGraph | View::Hex | View::PCode | View::Summary => Err(
-            kuna::Error::Reported(format!("the {view:?} view is not available in bonito yet")),
-        ),
+        View::Strings | View::CallGraph | View::Summary => Err(kuna::Error::Reported(format!(
+            "the {view:?} view is not available in bonito yet"
+        ))),
     }
 }
 
@@ -220,6 +222,144 @@ fn xrefs_reply(reply: Reply<Xrefs>) -> Reply<Vec<String>> {
         data: lines,
         notes: join_notes(said, cut),
     }
+}
+
+/// A hexdump as `0x201140  50 bf 03 …  P...` lines. The digits and the text are forced to hex digits and printable
+/// ASCII (kuna's are from the binary). Kuna's notes, a cut dump and what the load metadata says about the bytes
+/// join the reply's notes.
+fn hex_reply(reply: Reply<Hexdump>) -> Reply<Vec<String>> {
+    let Reply { data, notes } = reply;
+    let (mut lines, cut) = bounded(data.rows.iter().map(|row| {
+        let digits = dotted(row.bytes.as_str(), |c| c.is_ascii_hexdigit());
+        let text = dotted(row.ascii.as_str(), |c| c == ' ' || c.is_ascii_graphic());
+        format!("{:#x}  {:<47}  {text}", row.address, spaced(&digits))
+    }));
+    if lines.is_empty() {
+        lines.push(format!("no bytes at {:#x}", data.target.address));
+    }
+    let stopped = data
+        .truncated
+        .then(|| format!("the dump stops at {:#x}", data.end));
+    let said = notes
+        .into_iter()
+        .chain(data.notes.iter().map(|note| note.as_str().to_string()))
+        .chain(stopped)
+        .chain(load_caveats(&data));
+    Reply {
+        data: lines,
+        notes: join_notes(said, cut),
+    }
+}
+
+/// `text` with every character `keep` rejects shown as a dot.
+fn dotted(text: &str, keep: impl Fn(char) -> bool) -> String {
+    text.chars()
+        .map(|c| if keep(c) { c } else { '.' })
+        .collect()
+}
+
+/// `50bf03` as `50 bf 03`.
+fn spaced(digits: &str) -> String {
+    let mut spaced = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && at % 2 == 0 {
+            spaced.push(' ');
+        }
+        spaced.push(digit);
+    }
+    spaced
+}
+
+/// What the load metadata says about the bytes of a dump: fixups the loader applies, metadata kuna could not
+/// read, and bytes that are not the file's.
+fn load_caveats(data: &Hexdump) -> Vec<String> {
+    let fixups = data.fixups.len();
+    let other = data
+        .provenance
+        .iter()
+        .find(|part| part.source.as_str() != "file");
+    let overlap = data.provenance.iter().any(|part| !part.overlaps.is_empty());
+    [
+        (fixups > 0).then(|| {
+            format!("{fixups} load-time fixups lie in these bytes: the loader changes them")
+        }),
+        data.fixups_reason.as_ref().map(|reason| {
+            format!(
+                "fixups {}: {}",
+                data.fixups_coverage.as_str(),
+                reason.as_str()
+            )
+        }),
+        other.map(|part| format!("some bytes are {}, not file content", part.source.as_str())),
+        overlap.then(|| "segments overlap here".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Each instruction as `0x201140  PUSH RAX`, then one indented line per p-code operation; kuna's notes, a cut
+/// listing and a walk that stopped early join the reply's notes.
+fn pcode_reply(reply: Reply<Pcode>) -> Reply<Vec<String>> {
+    let Reply { data, notes } = reply;
+    let (mut lines, cut) = bounded(data.instructions.iter().flat_map(|instruction| {
+        let head = format!(
+            "{:#x}  {} {}",
+            instruction.address,
+            instruction.mnemonic.as_str(),
+            instruction.operands.as_str()
+        );
+        let ops = instruction
+            .ops
+            .iter()
+            .map(|op| format!("    {}", operation(op)));
+        once(head.trim_end().to_string()).chain(ops)
+    }));
+    let stopped = data
+        .truncated
+        .then(|| format!("the listing stops at {:#x}", data.end));
+    if lines.is_empty() {
+        lines.push(format!("no instructions at {:#x}", data.target.address));
+    }
+    let reason = data
+        .stop_reason
+        .as_ref()
+        .filter(|reason| reason.as_str() != "range_end")
+        .map(|reason| format!("the lift stops: {}", reason.as_str()));
+    let error = data
+        .error
+        .as_ref()
+        .map(|error| error.message.as_str().to_string());
+    let said = notes
+        .into_iter()
+        .chain(data.notes.iter().map(|note| note.as_str().to_string()))
+        .chain(stopped)
+        .chain(reason)
+        .chain(error);
+    Reply {
+        data: lines,
+        notes: join_notes(said, cut),
+    }
+}
+
+/// `(unique, 0x4f900, 8) = COPY (register, 0x0, 8)`: a p-code operation, without the `=` when it has no output.
+fn operation(op: &Op) -> String {
+    let inputs: Vec<String> = op.inputs.iter().map(varnode).collect();
+    let call = format!("{} {}", op.opcode.as_str(), inputs.join(", "));
+    match &op.output {
+        Some(output) => format!("{} = {}", varnode(output), call.trim_end()),
+        None => call.trim_end().to_string(),
+    }
+}
+
+/// `(register, 0x20, 8)`.
+fn varnode(node: &Varnode) -> String {
+    format!(
+        "({}, {:#x}, {})",
+        node.space.as_str(),
+        node.offset,
+        node.size
+    )
 }
 
 /// The rows of an xrefs answer: the references in code, then the stored pointers.

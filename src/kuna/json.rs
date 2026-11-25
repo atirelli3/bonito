@@ -131,7 +131,102 @@ pub struct DataRef {
     pub from_name: Option<Text>,
 }
 
-/// The address a disassembly or an xrefs query started from.
+/// What `kuna read --json` prints: the bytes of a range, sixteen to a row.
+#[derive(Debug, Deserialize)]
+pub struct Hexdump {
+    pub target: Target,
+    /// One past the last address listed: where to resume when `truncated`.
+    pub end: u64,
+    /// Whether kuna stopped before the end of the range.
+    pub truncated: bool,
+    /// What kuna wants the user to know about the dump.
+    pub notes: Vec<Text>,
+    pub rows: Vec<HexRow>,
+    /// The relocation metadata the fixups came from, or `partial` when some of it could not be read.
+    pub fixups_coverage: Text,
+    /// Why the fixups are incomplete, if they are.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub fixups_reason: Option<Text>,
+    /// Slots the loader rewrites, so the bytes shown are the file's, not what runs; only how many matters.
+    pub fixups: Vec<IgnoredAny>,
+    /// Where the bytes came from: the file, zero fill or a repaired header.
+    pub provenance: Vec<Provenance>,
+}
+
+/// A span of a dump and where its bytes came from.
+#[derive(Debug, Deserialize)]
+pub struct Provenance {
+    /// `file`, `zero-fill`, `repaired` or `unknown`.
+    pub source: Text,
+    /// Other segments that declare the same range; only how many matters.
+    #[serde(default)]
+    pub overlaps: Vec<IgnoredAny>,
+}
+
+/// Up to sixteen bytes.
+#[derive(Debug, Deserialize)]
+pub struct HexRow {
+    pub address: u64,
+    /// The bytes as hex digits, two to a byte.
+    pub bytes: Text,
+    /// The bytes as characters, `.` for those that do not print.
+    pub ascii: Text,
+}
+
+/// What `kuna raw-pcode --json` prints: each instruction with its SLEIGH p-code.
+#[derive(Debug, Deserialize)]
+pub struct Pcode {
+    pub target: Target,
+    /// One past the last address listed: where to resume when `truncated`.
+    pub end: u64,
+    /// Whether kuna stopped before the end of the range.
+    pub truncated: bool,
+    /// What kuna wants the user to know about the listing.
+    pub notes: Vec<Text>,
+    /// Why the walk ended: `range_end` when it reached the end of the range.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub stop_reason: Option<Text>,
+    /// The instruction that did not lift, if one did not.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub error: Option<LiftError>,
+    pub instructions: Vec<Lifted>,
+}
+
+/// Why a walk ended early.
+#[derive(Debug, Deserialize)]
+pub struct LiftError {
+    pub message: Text,
+}
+
+/// One instruction and the operations it lifts to.
+#[derive(Debug, Deserialize)]
+pub struct Lifted {
+    pub address: u64,
+    pub mnemonic: Text,
+    pub operands: Text,
+    pub ops: Vec<Op>,
+}
+
+/// One p-code operation.
+#[derive(Debug, Deserialize)]
+pub struct Op {
+    pub opcode: Text,
+    /// Where the result goes; null for a store or a branch.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub output: Option<Varnode>,
+    pub inputs: Vec<Varnode>,
+}
+
+/// A p-code operand: `size` bytes at `offset` of an address space.
+#[derive(Debug, Deserialize)]
+pub struct Varnode {
+    /// `register`, `unique`, `const`, `ram`…
+    pub space: Text,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// The address a disassembly, a dump or an xrefs query started from.
 #[derive(Debug, Deserialize)]
 pub struct Target {
     /// The function's name, when a function starts there.
@@ -290,6 +385,103 @@ mod tests {
     fn an_xrefs_document_without_its_references_is_rejected() {
         let text = r#"{"target":{"name":"t","address":1},"coverage":{"decoded":true,"notes":[]},"data_refs":[],"data_refs_coverage":"none"}"#;
         assert!(serde_json::from_str::<Xrefs>(text).is_err());
+    }
+
+    const HEXDUMP: &str = include_str!("../../tests/fixtures/read-main.json");
+    const PCODE: &str = include_str!("../../tests/fixtures/raw-pcode-main.json");
+
+    #[test]
+    fn parses_the_real_hexdump() {
+        let dump: Hexdump = serde_json::from_str(HEXDUMP).expect("parses");
+        assert_eq!(
+            (dump.target.address, dump.end, dump.truncated),
+            (0x201140, 0x201160, false)
+        );
+        assert_eq!(dump.rows.len(), 2);
+        let row = &dump.rows[0];
+        assert_eq!(row.address, 0x201140);
+        assert_eq!(row.bytes.as_str(), "50bf03000000e8d5ffffff89c7be0400");
+        assert_eq!(row.ascii.as_str(), "P...............");
+        assert!(dump.notes.is_empty());
+    }
+
+    #[test]
+    fn a_disassembly_is_not_a_hexdump() {
+        assert!(serde_json::from_str::<Hexdump>(DISASSEMBLE).is_err());
+    }
+
+    #[test]
+    fn parses_the_real_pcode_listing() {
+        let listing: Pcode = serde_json::from_str(PCODE).expect("parses");
+        assert_eq!(listing.instructions.len(), 8);
+        assert_eq!(listing.stop_reason.as_deref(), Some("range_end"));
+        assert!(listing.error.is_none() && !listing.truncated);
+        let push = &listing.instructions[0];
+        assert_eq!(
+            (push.mnemonic.as_str(), push.operands.as_str()),
+            ("PUSH", "RAX")
+        );
+        assert_eq!(push.ops.len(), 3);
+        let copy = &push.ops[0];
+        let out = copy.output.as_ref().expect("COPY has an output");
+        assert_eq!(copy.opcode.as_str(), "COPY");
+        assert_eq!(
+            (out.space.as_str(), out.offset, out.size),
+            ("unique", 0x4f900, 8)
+        );
+        assert_eq!(copy.inputs.len(), 1);
+        assert!(push.ops[2].output.is_none() && push.ops[2].inputs.len() == 3);
+    }
+
+    #[test]
+    fn a_disassembly_is_not_a_pcode_listing() {
+        assert!(serde_json::from_str::<Pcode>(DISASSEMBLE).is_err());
+    }
+
+    /// `text` as JSON with `key` removed from the top-level object, or from `inside` it.
+    fn without(text: &str, key: &str, inside: Option<&str>) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(text).expect("json");
+        let object = match inside {
+            Some(name) => value[name].as_object_mut(),
+            None => value.as_object_mut(),
+        };
+        object.expect("an object").remove(key);
+        value.to_string()
+    }
+
+    #[test]
+    fn keys_that_may_be_null_must_still_be_there() {
+        for key in ["error", "stop_reason"] {
+            let text = without(PCODE, key, None);
+            assert!(serde_json::from_str::<Pcode>(&text).is_err(), "{key}");
+        }
+        let mut value: serde_json::Value = serde_json::from_str(PCODE).expect("json");
+        value["instructions"][0]["ops"][0]
+            .as_object_mut()
+            .expect("an op")
+            .remove("output");
+        assert!(serde_json::from_str::<Pcode>(&value.to_string()).is_err());
+        let text = without(HEXDUMP, "fixups_reason", None);
+        assert!(serde_json::from_str::<Hexdump>(&text).is_err());
+    }
+
+    #[test]
+    fn a_hexdump_without_its_load_metadata_is_rejected() {
+        for key in ["fixups_coverage", "fixups", "provenance"] {
+            let text = without(HEXDUMP, key, None);
+            assert!(serde_json::from_str::<Hexdump>(&text).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_lift_error_is_an_object_with_a_message() {
+        let text = PCODE.replace(
+            r#""error": null"#,
+            r#""error": {"address": 1, "message": "bad\u001b[2J"}"#,
+        );
+        let listing: Pcode = serde_json::from_str(&text).expect("parses");
+        let error = listing.error.expect("an error");
+        assert_eq!(error.message.as_str(), "bad [2J");
     }
 
     #[test]

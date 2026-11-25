@@ -126,7 +126,9 @@ fn an_idle_worker_ends_once_kuna_is_cancelled_even_while_a_sender_lives() {
 fn a_view_kuna_cannot_give_yet_is_an_error_not_silence() {
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    requests.send(request(View::Hex, 0x201140)).expect("sends");
+    requests
+        .send(request(View::CallGraph, 0x201140))
+        .expect("sends");
     drop(requests);
     spawn(Arc::new(pinned_kuna()), hello(), queue, tx)
         .expect("spawns")
@@ -134,14 +136,14 @@ fn a_view_kuna_cannot_give_yet_is_an_error_not_silence() {
         .expect("finishes");
     assert!(matches!(rx.recv(), Ok(Msg::Functions(_))));
     let Ok(Msg::Code {
-        view: View::Hex,
+        view: View::CallGraph,
         answer: Err(kuna::Error::Reported(message)),
         ..
     }) = rx.recv()
     else {
-        panic!("expected an error answer for the Hex view");
+        panic!("expected an error answer for the CallGraph view");
     };
-    assert!(message.contains("Hex"), "{message}");
+    assert!(message.contains("CallGraph"), "{message}");
 }
 
 fn xrefs_of(text: &str) -> Reply<Vec<String>> {
@@ -306,6 +308,169 @@ fn a_flood_of_notes_is_capped() {
     );
     assert!(joined.contains("more than 10 notes"), "{joined}");
     assert!(joined.len() < 500, "{} bytes", joined.len());
+}
+
+fn hex_of(text: &str) -> Reply<Vec<String>> {
+    let dump: kuna::Hexdump = serde_json::from_str(text).expect("parses");
+    hex_reply(Reply {
+        data: dump,
+        notes: None,
+    })
+}
+
+fn pcode_of(text: &str) -> Reply<Vec<String>> {
+    let listing: kuna::Pcode = serde_json::from_str(text).expect("parses");
+    pcode_reply(Reply {
+        data: listing,
+        notes: None,
+    })
+}
+
+#[test]
+fn a_hexdump_is_one_line_per_row_with_spaced_bytes_and_the_text() {
+    let reply = hex_of(include_str!("../../tests/fixtures/read-main.json"));
+    assert_eq!(
+        reply.data,
+        [
+            "0x201140  50 bf 03 00 00 00 e8 d5 ff ff ff 89 c7 be 04 00  P...............",
+            "0x201150  00 00 58 e9 d8 ff ff ff 0f 1f 84 00 00 00 00 00  ..X............."
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+/// The metadata of a hexdump whose bytes are the file's, untouched.
+const CLEAN: &str = r#""fixups_coverage":"dynamic-relocations","fixups_reason":null,"fixups":[],
+    "provenance":[{"source":"file","overlaps":[]}]"#;
+
+/// A hexdump document of function `f` at 0x10 that ends at 0x20, with `rows` and `metadata` (JSON members).
+fn dump(truncated: bool, notes: &str, rows: &str, metadata: &str) -> String {
+    format!(
+        r#"{{"target":{{"name":"f","address":16}},"end":32,"truncated":{truncated},"notes":{notes},
+        "rows":{rows},{metadata}}}"#
+    )
+}
+
+const ABC: &str = r#"[{"address":16,"bytes":"414243","ascii":"ABC"}]"#;
+
+#[test]
+fn a_short_last_row_keeps_the_text_aligned() {
+    let reply = hex_of(&dump(false, "[]", ABC, CLEAN));
+    assert_eq!(reply.data, [format!("0x10  {:<47}  ABC", "41 42 43")]);
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn a_cut_hexdump_says_where_it_stops() {
+    let reply = hex_of(&dump(true, r#"["partial"]"#, ABC, CLEAN));
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("partial · the dump stops at 0x20")
+    );
+}
+
+#[test]
+fn hex_digits_and_text_that_are_not_are_shown_as_dots() {
+    let rows = r#"[{"address":16,"bytes":"4g","ascii":"Aé"}]"#;
+    let reply = hex_of(&dump(false, "[]", rows, CLEAN));
+    assert_eq!(reply.data, [format!("0x10  {:<47}  A.", "4.")]);
+}
+
+#[test]
+fn a_dump_with_no_rows_says_so() {
+    let reply = hex_of(&dump(false, "[]", "[]", CLEAN));
+    assert_eq!(reply.data, ["no bytes at 0x10"]);
+}
+
+#[test]
+fn bytes_the_loader_changes_or_that_are_not_the_files_are_said() {
+    let said = |metadata: &str| hex_of(&dump(false, "[]", ABC, metadata)).notes;
+    let fixed = r#""fixups_coverage":"dynamic-relocations","fixups_reason":null,
+        "fixups":[{"address":16}],"provenance":[{"source":"file","overlaps":[]}]"#;
+    assert_eq!(
+        said(fixed).as_deref(),
+        Some("1 load-time fixups lie in these bytes: the loader changes them")
+    );
+    let partial = r#""fixups_coverage":"partial","fixups_reason":"some relocations unreadable",
+        "fixups":[],"provenance":[{"source":"file","overlaps":[]}]"#;
+    assert_eq!(
+        said(partial).as_deref(),
+        Some("fixups partial: some relocations unreadable")
+    );
+    let zero = r#""fixups_coverage":"none","fixups_reason":null,"fixups":[],
+        "provenance":[{"source":"zero-fill","overlaps":[]},{"source":"file","overlaps":[{"index":1}]}]"#;
+    assert_eq!(
+        said(zero).as_deref(),
+        Some("some bytes are zero-fill, not file content · segments overlap here")
+    );
+}
+
+#[test]
+fn p_code_is_the_instruction_then_one_indented_line_per_operation() {
+    let reply = pcode_of(include_str!("../../tests/fixtures/raw-pcode-main.json"));
+    assert_eq!(
+        reply.data[..4],
+        [
+            "0x201140  PUSH RAX",
+            "    (unique, 0x4f900, 8) = COPY (register, 0x0, 8)",
+            "    (register, 0x20, 8) = INT_SUB (register, 0x20, 8), (const, 0x8, 8)",
+            "    STORE (const, 0x3, 8), (register, 0x20, 8), (unique, 0x4f900, 8)"
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn an_operation_with_no_output_and_no_inputs_has_no_trailing_space() {
+    let reply = pcode_of(
+        r#"{"target":{"name":"f","address":16},"end":17,"truncated":false,"notes":[],
+        "stop_reason":"range_end","error":null,
+        "instructions":[{"address":16,"mnemonic":"RET","operands":"",
+        "ops":[{"opcode":"RETURN","output":null,"inputs":[]}]}]}"#,
+    );
+    assert_eq!(reply.data, ["0x10  RET", "    RETURN"]);
+}
+
+#[test]
+fn a_listing_with_no_instructions_says_so() {
+    let reply = pcode_of(
+        r#"{"target":{"name":"f","address":16},"end":16,"truncated":false,"notes":[],
+        "stop_reason":"range_end","error":null,"instructions":[]}"#,
+    );
+    assert_eq!(reply.data, ["no instructions at 0x10"]);
+}
+
+#[test]
+fn a_lift_that_stopped_early_says_why() {
+    let reply = pcode_of(
+        r#"{"target":{"name":"f","address":16},"end":32,"truncated":false,"notes":[],
+        "stop_reason":"decode_error","error":{"address":24,"message":"bad opcode at 0x18"},
+        "instructions":[{"address":16,"mnemonic":"NOP","operands":"","ops":[]}]}"#,
+    );
+    assert_eq!(reply.data, ["0x10  NOP"]);
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("the lift stops: decode_error · bad opcode at 0x18")
+    );
+}
+
+#[test]
+fn the_worker_answers_hex_and_p_code_on_request() {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn(Arc::new(pinned_kuna()), hello(), queue, tx).expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    requests.send(request(View::Hex, 0x201140)).expect("sends");
+    let dump = next_lines(&rx, View::Hex, 0x201140);
+    assert_eq!(dump.len(), 2, "{dump:?}");
+    assert!(dump[0].starts_with("0x201140  50 bf 03"), "{dump:?}");
+    requests
+        .send(request(View::PCode, 0x201140))
+        .expect("sends");
+    let lifted = next_lines(&rx, View::PCode, 0x201140);
+    assert_eq!(lifted[0], "0x201140  PUSH RAX", "{lifted:?}");
+    drop(requests);
+    worker.join().expect("ends when nobody can ask any more");
 }
 
 #[test]

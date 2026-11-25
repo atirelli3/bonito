@@ -365,6 +365,19 @@ fn xrefs_to_a_function_list_its_callers() {
 }
 
 #[test]
+fn the_hexdump_and_the_pcode_of_a_function_cover_all_of_it() {
+    let kuna = real_kuna();
+    let binary = fixture("hello.elf");
+    let dump = kuna.hexdump(&binary, 0x201140).expect("dumps");
+    assert_eq!(
+        (dump.notes, dump.data.rows.len(), dump.data.end),
+        (None, 2, 0x201160)
+    );
+    let listing = kuna.pcode(&binary, 0x201140).expect("lifts");
+    assert_eq!((listing.notes, listing.data.instructions.len()), (None, 8));
+}
+
+#[test]
 fn an_xrefs_answer_for_another_address_is_refused() {
     let document = || {
         let text = include_str!("../../tests/fixtures/xrefs-square.json");
