@@ -317,6 +317,39 @@ fn lists_the_functions_of_the_fixture_in_address_order() {
 }
 
 #[test]
+fn the_data_fixture_has_a_string_a_crypto_constant_and_a_blob() {
+    let kuna = real_kuna();
+    let binary = fixture("data.elf");
+    let ask = |subcommand: &str| {
+        let reply = kuna.query::<serde_json::Value>(subcommand, &binary, &[]);
+        let reply = reply.expect("kuna answers");
+        assert_eq!(
+            reply.notes, None,
+            "{subcommand} answered with a degraded load"
+        );
+        assert_eq!(reply.data["error"], serde_json::Value::Null, "{subcommand}");
+        reply.data
+    };
+    let strings = ask("strings");
+    let greeting = strings["strings"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["text"] == "hello from bonito")
+        .expect("the greeting is listed");
+    assert_eq!(greeting["functions"][0]["name"], "say");
+    let crypto = ask("crypto");
+    assert_eq!(crypto["count"], 1);
+    assert_eq!(crypto["constants"][0]["algorithm"], "TEA/XTEA");
+    assert_eq!(crypto["constants"][0]["functions"][0]["name"], "tea_step");
+    let blobs = ask("blobs");
+    assert_eq!(blobs["count"], 1);
+    assert_eq!(blobs["blobs"][0]["kind"], "gzip");
+    assert_eq!(blobs["blobs"][0]["length"], 44);
+    assert_eq!(blobs["blobs"][0]["functions"][0]["name"], "packed");
+}
+
+#[test]
 fn a_file_that_is_not_a_binary_is_a_failed_call() {
     let error = real_kuna()
         .functions(&fixture("hello.c"))
