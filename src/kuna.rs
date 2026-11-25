@@ -19,7 +19,7 @@ mod scratch;
 mod text;
 
 use crate::options::Options;
-use scratch::Scratch;
+pub use scratch::Scratch;
 
 pub use graph::{Graph, Node};
 pub use json::{
