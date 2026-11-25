@@ -473,6 +473,208 @@ fn the_worker_answers_hex_and_p_code_on_request() {
     worker.join().expect("ends when nobody can ask any more");
 }
 
+fn data() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data.elf")
+}
+
+fn plain<T>(data: T) -> Reply<T> {
+    Reply { data, notes: None }
+}
+
+const STRINGS: &str = include_str!("../../tests/fixtures/strings-data.json");
+const CRYPTO: &str = include_str!("../../tests/fixtures/crypto-data.json");
+const BLOBS: &str = include_str!("../../tests/fixtures/blobs-data.json");
+const SUMMARY: &str = include_str!("../../tests/fixtures/summary-hello.json");
+
+#[test]
+fn strings_crypto_and_blobs_are_one_line_per_row_with_the_functions_that_use_them() {
+    let strings = serde_json::from_str(STRINGS).expect("parses");
+    assert_eq!(
+        strings_reply(plain(strings)).data,
+        [
+            "0x200120  .rodata  hello from bonito  ← say",
+            "0x200154  .rodata  ()-JUH"
+        ]
+    );
+    let crypto = serde_json::from_str(CRYPTO).expect("parses");
+    assert_eq!(
+        crypto_reply(plain(crypto)).data,
+        [
+            "0x201192  .text  TEA/XTEA  delta 0x9E3779B9 (golden ratio; also RC5/RC6 Q32)  ← tea_step"
+        ]
+    );
+    let blobs = serde_json::from_str(BLOBS).expect("parses");
+    assert_eq!(
+        blobs_reply(plain(blobs)).data,
+        ["0x200140  .rodata  gzip  44 bytes  ← packed"]
+    );
+}
+
+#[test]
+fn a_string_used_by_many_functions_lists_five_and_counts_the_rest() {
+    let users: Vec<String> = (1..=7)
+        .map(|n| format!(r#"{{"name":"f{n}","address":{n}}}"#))
+        .collect();
+    let text = format!(
+        r#"{{"scanned":"sections","strings":[{{"address":16,"text":"x","section":null,"functions":[{}]}}]}}"#,
+        users.join(",")
+    );
+    let strings = serde_json::from_str(&text).expect("parses");
+    assert_eq!(
+        strings_reply(plain(strings)).data,
+        ["0x10  ?  x  ← f1, f2, f3, f4, f5, …+2"]
+    );
+}
+
+#[test]
+fn a_binary_with_none_of_a_kind_says_so() {
+    let none = |key: &str| format!(r#"{{"scanned":"sections","{key}":[]}}"#);
+    let strings = serde_json::from_str(&none("strings")).expect("parses");
+    assert_eq!(strings_reply(plain(strings)).data, ["no strings found"]);
+    let crypto = serde_json::from_str(&none("constants")).expect("parses");
+    assert_eq!(
+        crypto_reply(plain(crypto)).data,
+        ["no crypto constants found"]
+    );
+    let blobs = serde_json::from_str(&none("blobs")).expect("parses");
+    assert_eq!(blobs_reply(plain(blobs)).data, ["no embedded files found"]);
+}
+
+#[test]
+fn the_summary_lists_the_entry_the_counts_and_the_largest_functions() {
+    let summary = serde_json::from_str(SUMMARY).expect("parses");
+    let reply = summary_reply(plain(summary));
+    assert_eq!(
+        reply.data,
+        [
+            "entry: _start  0x201160",
+            "main: main  0x201140",
+            "functions: 4 (3 reachable from the entry, 2 with no callers)",
+            "code: 98 bytes",
+            "sizes: 16-63 bytes ×4",
+            "",
+            "largest functions:",
+            "  0x201160  34  _start",
+            "  0x201140  32  main",
+            "  0x201120  16  square",
+            "  0x201130  16  add"
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn loader_repairs_lead_the_summary_and_reach_the_status_line() {
+    let text = SUMMARY.replace(
+        r#""warnings": []"#,
+        r#""warnings": ["ELF section table unusable"]"#,
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    let reply = summary_reply(plain(summary));
+    assert_eq!(reply.data[0], "warning: ELF section table unusable");
+    assert_eq!(reply.notes.as_deref(), Some("ELF section table unusable"));
+}
+
+#[test]
+fn a_summary_without_an_entry_point_says_none() {
+    let text = SUMMARY.replace(r#""entry": {"#, r#""entry": null, "was_entry": {"#);
+    let summary = serde_json::from_str(&text).expect("parses");
+    assert_eq!(summary_reply(plain(summary)).data[0], "entry: none");
+}
+
+#[test]
+fn a_scan_by_segments_is_said_because_the_section_table_was_unusable() {
+    let said = |key: &str, scanned: &str| {
+        let text = format!(r#"{{"scanned":"{scanned}","{key}":[]}}"#);
+        match key {
+            "strings" => strings_reply(plain(serde_json::from_str(&text).expect("parses"))).notes,
+            "constants" => crypto_reply(plain(serde_json::from_str(&text).expect("parses"))).notes,
+            _ => blobs_reply(plain(serde_json::from_str(&text).expect("parses"))).notes,
+        }
+    };
+    for key in ["strings", "constants", "blobs"] {
+        assert_eq!(said(key, "sections"), None, "{key}");
+        let note = said(key, "segments").expect("a note");
+        assert!(
+            note.contains("segments") && note.contains("unpack"),
+            "{key}: {note}"
+        );
+    }
+}
+
+#[test]
+fn a_summary_of_an_image_without_an_entry_point_still_shows() {
+    let text = SUMMARY.replace(
+        r#""reachable_from_entry": 3"#,
+        r#""reachable_from_entry": null"#,
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    assert_eq!(
+        summary_reply(plain(summary)).data[2],
+        "functions: 4 (reachable from the entry: unknown, 2 with no callers)"
+    );
+}
+
+#[test]
+fn a_summary_with_no_size_buckets_says_none() {
+    let text = SUMMARY.replace(r#""count": 4"#, r#""count": 0"#);
+    let summary = serde_json::from_str(&text).expect("parses");
+    assert_eq!(summary_reply(plain(summary)).data[4], "sizes: none");
+}
+
+#[test]
+fn a_warning_kuna_also_printed_on_stderr_is_said_once_and_a_flood_is_capped() {
+    let text = SUMMARY.replace(
+        r#""warnings": []"#,
+        r#""warnings": ["ELF section table unusable"]"#,
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    let reply = summary_reply(Reply {
+        data: summary,
+        notes: Some("ELF section table unusable".to_string()),
+    });
+    assert_eq!(reply.notes.as_deref(), Some("ELF section table unusable"));
+    let many: Vec<String> = (0..50).map(|n| format!(r#""repair {n}""#)).collect();
+    let text = SUMMARY.replace(
+        r#""warnings": []"#,
+        &format!(r#""warnings": [{}]"#, many.join(",")),
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    let lines = summary_reply(plain(summary)).data;
+    let warnings = lines
+        .iter()
+        .filter(|line| line.starts_with("warning: "))
+        .count();
+    assert_eq!(warnings, MAX_NOTES);
+    assert!(
+        lines.iter().any(|line| line.starts_with("entry: ")),
+        "the overview survives"
+    );
+}
+
+#[test]
+fn the_worker_answers_the_binary_wide_views_at_address_zero() {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn(Arc::new(pinned_kuna()), data(), queue, tx).expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    for (view, expected) in [
+        (View::Strings, "0x200120  .rodata  hello from bonito  ← say"),
+        (View::Crypto, "0x201192  .text  TEA/XTEA"),
+        (View::Blobs, "0x200140  .rodata  gzip  44 bytes  ← packed"),
+        (View::Summary, "entry: _start  0x2011a0"),
+    ] {
+        requests.send(request(view, 0)).expect("sends");
+        let lines = next_lines(&rx, view, 0);
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "{view:?}: {lines:?}"
+        );
+    }
+    drop(requests);
+    worker.join().expect("ends when nobody can ask any more");
+}
+
 #[test]
 fn the_worker_lists_the_callers_of_a_function_on_request() {
     let (tx, rx) = mpsc::channel();

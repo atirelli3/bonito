@@ -20,6 +20,8 @@ use std::thread::{self, JoinHandle};
 const MAX_VIEWS: usize = 64;
 /// What a mark key says outside the code pane.
 const CODE_ONLY: &str = "marks are for the code pane";
+/// How many characters of the binary's file name a view title keeps.
+const NAME_LIMIT: usize = 100;
 
 /// The last search, which `n` and `N` repeat.
 #[derive(Clone)]
@@ -85,10 +87,26 @@ pub fn view_name(view: View) -> &'static str {
         View::Disassembly => "disassembly",
         View::Xrefs => "xrefs",
         View::Strings => "strings",
+        View::Crypto => "crypto",
+        View::Blobs => "blobs",
         View::CallGraph => "call graph",
         View::Hex => "hex",
         View::PCode => "p-code",
         View::Summary => "summary",
+    }
+}
+
+/// Whether `view` is of one function, asked for by its entry address, and not of the whole binary (address 0).
+fn per_function(view: View) -> bool {
+    match view {
+        // ponytail: #12 decides for the call graph; until then `open_view` refuses it.
+        View::Decompile
+        | View::Disassembly
+        | View::Xrefs
+        | View::Hex
+        | View::PCode
+        | View::CallGraph => true,
+        View::Strings | View::Crypto | View::Blobs | View::Summary => false,
     }
 }
 
@@ -189,6 +207,8 @@ impl App {
             View::Disassembly => "disassembling",
             View::Xrefs
             | View::Strings
+            | View::Crypto
+            | View::Blobs
             | View::CallGraph
             | View::Hex
             | View::PCode
@@ -282,7 +302,7 @@ impl App {
     }
 
     /// Does what `action` asks.
-    // ponytail: #9 acts on the other views; until then they say it is not available.
+    // ponytail: #12 adds the call graph; until then it says it is not available.
     // Every action is named so a new one cannot be dropped by accident.
     fn apply(&mut self, action: Action) {
         match action {
@@ -457,6 +477,11 @@ impl App {
             return;
         };
         let (view, word) = (shown.request.view, pane.word());
+        let view = if per_function(view) {
+            view
+        } else {
+            View::Decompile
+        };
         let Some(word) = word else {
             self.message = Some("no word under the cursor".to_string());
             return;
@@ -573,21 +598,24 @@ impl App {
         }
     }
 
-    /// `gd` `ga` `gr` `gh` `gp`, or Enter in the list: `view` of the selected function, or of the one shown.
+    /// `gd` `ga` `gr` `gh` `gp`, or Enter in the list: `view` of the selected function, or of the one shown (the
+    /// selected one when the view shown is of the whole binary); `gs` `gi` `:crypto` `:blobs`: the whole binary.
     fn open_view(&mut self, view: View) {
-        let shown = matches!(
-            view,
-            View::Decompile | View::Disassembly | View::Xrefs | View::Hex | View::PCode
-        );
-        if !shown {
+        if view == View::CallGraph {
             return self.not_yet();
         }
-        let target = match self.focus {
-            Focus::Code => self
-                .shown
-                .as_ref()
-                .map(|shown| (shown.request.address, shown.name.clone())),
-            Focus::List => self
+        if !per_function(view) {
+            let name = self.binary_name();
+            return self.jump(Request { view, address: 0 }, name);
+        }
+        // A view of the whole binary has no function: the list's selection stands in for it.
+        let shown = self
+            .shown
+            .as_ref()
+            .filter(|shown| self.focus == Focus::Code && per_function(shown.request.view));
+        let target = match shown {
+            Some(shown) => Some((shown.request.address, shown.name.clone())),
+            None => self
                 .selected()
                 .map(|function| (function.address, function.name.as_str().to_string())),
         };
@@ -614,7 +642,13 @@ impl App {
         }
     }
 
-    /// Runs a `:` command: `q` `q!` `quit`, and `e NAME|0xADDR` (`edit`).
+    /// The file name of the binary, cleaned: the title of a view of the whole binary.
+    fn binary_name(&self) -> String {
+        let name = self.binary.file_name().unwrap_or(self.binary.as_os_str());
+        kuna::single_line(&name.to_string_lossy(), NAME_LIMIT)
+    }
+
+    /// Runs a `:` command: `q` `q!` `quit`, `e NAME|0xADDR` (`edit`), `crypto` and `blobs`.
     fn command(&mut self, line: &str) {
         let line = line.trim();
         let (name, argument) = line
@@ -633,6 +667,8 @@ impl App {
                 }
                 Err(why) => self.message = Some(why),
             },
+            ("crypto", "") => self.open_view(View::Crypto),
+            ("blobs", "") => self.open_view(View::Blobs),
             ("", _) => {}
             _ => self.message = Some(format!("not a command: {line}")),
         }

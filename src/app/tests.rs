@@ -679,6 +679,58 @@ fn gr_asks_for_the_callers_of_the_selected_function() {
 }
 
 #[test]
+fn the_binary_wide_views_are_asked_for_at_address_zero_and_titled_by_the_file() {
+    for (keys, view) in [("gs", View::Strings), ("gi", View::Summary)] {
+        let (mut app, queue) = three();
+        type_text(&mut app, keys);
+        assert_eq!(queue.try_recv(), Ok(asked(view, 0)), "{keys}");
+        let name = app.shown.as_ref().map(|shown| shown.name.as_str());
+        assert_eq!(name, Some("hello.elf"), "{keys}");
+    }
+}
+
+#[test]
+fn a_view_of_one_function_from_a_binary_wide_view_says_when_no_function_is_known() {
+    let mut app = app();
+    type_text(&mut app, "gs");
+    type_text(&mut app, "gd");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("the functions are still loading")
+    );
+}
+
+#[test]
+fn colon_crypto_and_colon_blobs_open_their_views() {
+    for (line, view) in [(":crypto", View::Crypto), (":blobs", View::Blobs)] {
+        let (mut app, queue) = three();
+        type_text(&mut app, line);
+        enter(&mut app);
+        assert_eq!(queue.try_recv(), Ok(asked(view, 0)), "{line}");
+    }
+}
+
+#[test]
+fn a_binary_wide_view_asks_no_function_so_the_list_selection_stands_in() {
+    let (mut app, queue) = three();
+    type_text(&mut app, "gs");
+    queue.try_recv().expect("asked");
+    type_text(&mut app, "gd");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, ALPHA)));
+}
+
+#[test]
+fn enter_on_a_function_name_in_a_binary_wide_view_opens_its_decompilation() {
+    let (mut app, queue) = three();
+    type_text(&mut app, "gs");
+    queue.try_recv().expect("asked");
+    let lines = code(View::Strings, 0, &["beta"], None);
+    app.update(lines).expect("updates");
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, BETA)));
+}
+
+#[test]
 fn gh_and_gp_ask_for_the_hex_and_the_p_code_of_the_selected_function() {
     for (keys, view) in [("gh", View::Hex), ("gp", View::PCode)] {
         let (mut app, queue) = three();

@@ -378,6 +378,46 @@ fn the_hexdump_and_the_pcode_of_a_function_cover_all_of_it() {
 }
 
 #[test]
+fn the_binary_wide_answers_are_typed_and_clean() {
+    let kuna = real_kuna();
+    let data = fixture("data.elf");
+    let strings = kuna.strings(&data).expect("lists strings");
+    assert_eq!(strings.notes, None);
+    assert!(
+        strings
+            .data
+            .strings
+            .iter()
+            .any(|row| row.text == "hello from bonito")
+    );
+    let crypto = kuna.crypto(&data).expect("lists constants");
+    assert_eq!(crypto.data.constants.len(), 1);
+    let blobs = kuna.blobs(&data).expect("lists blobs");
+    assert_eq!(blobs.data.blobs.len(), 1);
+    let summary = kuna.summary(&fixture("hello.elf")).expect("summarises");
+    assert_eq!((summary.notes, summary.data.total), (None, 4));
+    let entry = summary
+        .data
+        .summary
+        .entry
+        .as_ref()
+        .map(|entry| entry.name.as_str());
+    assert_eq!(entry, Some("_start"));
+}
+
+#[test]
+fn a_summary_that_reports_an_error_is_an_error() {
+    let text = include_str!("../../tests/fixtures/summary-hello.json")
+        .replace(r#""error": null"#, r#""error": "packed image""#);
+    let document = serde_json::from_str::<Summary>(&text).expect("parses");
+    let error = into_summary(document).expect_err("reported");
+    assert!(
+        matches!(&error, Error::Reported(message) if message == "packed image"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn an_xrefs_answer_for_another_address_is_refused() {
     let document = || {
         let text = include_str!("../../tests/fixtures/xrefs-square.json");

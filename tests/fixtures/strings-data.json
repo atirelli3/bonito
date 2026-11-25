@@ -1,0 +1,43 @@
+{
+  "binary": "tests/fixtures/data.elf",
+  "encoding": "ascii",
+  "min_length": 5,
+  "filter": null,
+  "section": null,
+  "termination": "any",
+  "scanned": "sections",
+  "xrefs": true,
+  "count": 2,
+  "strings": [
+    {
+      "address": 2097440,
+      "address_hex": "0x200120",
+      "text": "hello from bonito",
+      "length": 17,
+      "byte_length": 18,
+      "nul_terminated": true,
+      "encoding": "ascii",
+      "section": ".rodata",
+      "xrefs_count": 1,
+      "functions": [
+        {
+          "name": "say",
+          "address": 2101616,
+          "address_hex": "0x201170"
+        }
+      ]
+    },
+    {
+      "address": 2097492,
+      "address_hex": "0x200154",
+      "text": "()-JUH",
+      "length": 6,
+      "byte_length": 6,
+      "nul_terminated": false,
+      "encoding": "ascii",
+      "section": ".rodata",
+      "xrefs_count": 0,
+      "functions": []
+    }
+  ]
+}

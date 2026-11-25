@@ -1,6 +1,6 @@
 //! Typed views of the JSON kuna prints: unknown fields are ignored, the fields bonito relies on are required,
 //! and text that comes from the analysed binary is cleaned as it is parsed.
-// ponytail: the fields are kuna's contract; the views of #51, #52 and #9 read them as they land.
+// ponytail: the fields are kuna's contract; the views read them as they land.
 #![allow(dead_code)]
 
 use super::text::{Code, Text};
@@ -223,6 +223,111 @@ pub struct Varnode {
     /// `register`, `unique`, `const`, `ram`…
     pub space: Text,
     pub offset: u64,
+    pub size: u64,
+}
+
+/// What `kuna strings --json` prints.
+#[derive(Debug, Deserialize)]
+pub struct Strings {
+    /// `sections`, or `segments` when the section table was unusable and the scan covers whatever is mapped.
+    pub scanned: Text,
+    pub strings: Vec<FoundString>,
+}
+
+/// One string and the functions that use it.
+#[derive(Debug, Deserialize)]
+pub struct FoundString {
+    pub address: u64,
+    pub text: Text,
+    /// The section it lies in, null when kuna could not tell.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub section: Option<Text>,
+    pub functions: Vec<Located>,
+}
+
+/// What `kuna crypto --json` prints.
+#[derive(Debug, Deserialize)]
+pub struct Crypto {
+    /// `sections`, or `segments` when the section table was unusable.
+    pub scanned: Text,
+    pub constants: Vec<Constant>,
+}
+
+/// One well-known crypto constant and the functions that use it.
+#[derive(Debug, Deserialize)]
+pub struct Constant {
+    pub address: u64,
+    /// `SHA-256`, `TEA/XTEA`…
+    pub algorithm: Text,
+    /// Which constant of the algorithm: `K`, `delta 0x9E3779B9`…
+    pub name: Text,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub section: Option<Text>,
+    pub functions: Vec<Located>,
+}
+
+/// What `kuna blobs --json` prints.
+#[derive(Debug, Deserialize)]
+pub struct Blobs {
+    /// `sections`, or `segments` when the section table was unusable.
+    pub scanned: Text,
+    pub blobs: Vec<Blob>,
+}
+
+/// One whole file stored in the image (`png`, `gzip`, `zip`…) and the functions that use it.
+#[derive(Debug, Deserialize)]
+pub struct Blob {
+    pub address: u64,
+    pub kind: Text,
+    /// Its exact length in bytes.
+    pub length: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub section: Option<Text>,
+    pub functions: Vec<Located>,
+}
+
+/// What `kuna functions --summary --json` prints: where to start.
+#[derive(Debug, Deserialize)]
+pub struct Summary {
+    /// Why discovery failed, if it did.
+    pub error: Option<Text>,
+    /// The loader's header repairs: the answer is degraded.
+    pub warnings: Vec<Text>,
+    /// How many functions kuna found.
+    pub total: u64,
+    pub summary: Overview,
+}
+
+/// The numbers of a summary.
+#[derive(Debug, Deserialize)]
+pub struct Overview {
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub entry: Option<Located>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub main: Option<Located>,
+    /// How many functions the entry point reaches; null when there is no entry point or the image is packed.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub reachable_from_entry: Option<u64>,
+    /// Functions nothing calls.
+    pub no_callers: u64,
+    pub code_bytes: u64,
+    pub size_buckets: Vec<SizeBucket>,
+    /// The largest functions, largest first.
+    pub largest: Vec<Largest>,
+}
+
+/// How many functions have a size in a range: `16-63`, `4096+`.
+#[derive(Debug, Deserialize)]
+pub struct SizeBucket {
+    pub bucket: Text,
+    pub count: u64,
+}
+
+/// One of the largest functions.
+#[derive(Debug, Deserialize)]
+pub struct Largest {
+    pub name: Text,
+    pub address: u64,
     pub size: u64,
 }
 
@@ -471,6 +576,114 @@ mod tests {
             let text = without(HEXDUMP, key, None);
             assert!(serde_json::from_str::<Hexdump>(&text).is_err(), "{key}");
         }
+    }
+
+    const STRINGS: &str = include_str!("../../tests/fixtures/strings-data.json");
+    const CRYPTO: &str = include_str!("../../tests/fixtures/crypto-data.json");
+    const BLOBS: &str = include_str!("../../tests/fixtures/blobs-data.json");
+    const SUMMARY: &str = include_str!("../../tests/fixtures/summary-hello.json");
+
+    #[test]
+    fn parses_the_real_strings_crypto_and_blobs() {
+        let strings: Strings = serde_json::from_str(STRINGS).expect("parses");
+        let greeting = &strings.strings[0];
+        assert_eq!(
+            (greeting.address, greeting.text.as_str()),
+            (0x200120, "hello from bonito")
+        );
+        assert_eq!(greeting.section.as_deref(), Some(".rodata"));
+        assert_eq!(greeting.functions[0].name.as_str(), "say");
+        let crypto: Crypto = serde_json::from_str(CRYPTO).expect("parses");
+        let delta = &crypto.constants[0];
+        assert_eq!(
+            (delta.algorithm.as_str(), delta.functions[0].name.as_str()),
+            ("TEA/XTEA", "tea_step")
+        );
+        let blobs: Blobs = serde_json::from_str(BLOBS).expect("parses");
+        let gzip = &blobs.blobs[0];
+        assert_eq!(
+            (
+                gzip.kind.as_str(),
+                gzip.length,
+                gzip.functions[0].name.as_str()
+            ),
+            ("gzip", 44, "packed")
+        );
+    }
+
+    #[test]
+    fn parses_the_real_summary() {
+        let document: Summary = serde_json::from_str(SUMMARY).expect("parses");
+        assert_eq!((document.total, document.warnings.len()), (4, 0));
+        let overview = &document.summary;
+        let entry = overview.entry.as_ref().expect("an entry point");
+        assert_eq!((entry.name.as_str(), entry.address), ("_start", 0x201160));
+        assert_eq!(
+            overview.main.as_ref().map(|main| main.address),
+            Some(0x201140)
+        );
+        assert_eq!(
+            (
+                overview.reachable_from_entry,
+                overview.no_callers,
+                overview.code_bytes
+            ),
+            (Some(3), 2, 98)
+        );
+        let buckets: Vec<(&str, u64)> = overview
+            .size_buckets
+            .iter()
+            .map(|b| (b.bucket.as_str(), b.count))
+            .collect();
+        assert!(buckets.contains(&("16-63", 4)), "{buckets:?}");
+        assert_eq!(overview.largest[0].name.as_str(), "_start");
+        assert_eq!(overview.largest[0].size, 34);
+    }
+
+    #[test]
+    fn a_summary_of_an_image_without_an_entry_point_parses_but_must_still_say_so() {
+        let text = SUMMARY.replace(
+            r#""reachable_from_entry": 3"#,
+            r#""reachable_from_entry": null"#,
+        );
+        let document: Summary = serde_json::from_str(&text).expect("parses");
+        assert_eq!(document.summary.reachable_from_entry, None);
+        let mut value: serde_json::Value = serde_json::from_str(SUMMARY).expect("json");
+        value["summary"]
+            .as_object_mut()
+            .expect("an object")
+            .remove("reachable_from_entry");
+        assert!(serde_json::from_str::<Summary>(&value.to_string()).is_err());
+        let strings = without(STRINGS, "scanned", None);
+        assert!(serde_json::from_str::<Strings>(&strings).is_err());
+        let crypto = without(CRYPTO, "scanned", None);
+        assert!(serde_json::from_str::<Crypto>(&crypto).is_err());
+        let blobs = without(BLOBS, "scanned", None);
+        assert!(serde_json::from_str::<Blobs>(&blobs).is_err());
+    }
+
+    #[test]
+    fn a_row_without_its_functions_or_a_summary_without_its_overview_is_rejected() {
+        let strings = without(STRINGS, "strings", None);
+        assert!(serde_json::from_str::<Strings>(&strings).is_err());
+        let mut value: serde_json::Value = serde_json::from_str(STRINGS).expect("json");
+        value["strings"][0]
+            .as_object_mut()
+            .expect("a row")
+            .remove("functions");
+        assert!(serde_json::from_str::<Strings>(&value.to_string()).is_err());
+        let summary = without(SUMMARY, "summary", None);
+        assert!(serde_json::from_str::<Summary>(&summary).is_err());
+        let warnings = without(SUMMARY, "warnings", None);
+        assert!(serde_json::from_str::<Summary>(&warnings).is_err());
+    }
+
+    #[test]
+    fn text_in_strings_is_cleaned_while_parsing() {
+        let text = r#"{"scanned":"sections","strings":[{"address":1,"text":"a\u001b[2Jb","section":null,"functions":[]}]}"#;
+        let strings: Strings = serde_json::from_str(text).expect("parses");
+        assert_eq!(strings.strings[0].text.as_str(), "a [2Jb");
+        assert!(strings.strings[0].section.is_none());
     }
 
     #[test]

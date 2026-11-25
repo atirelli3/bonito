@@ -1,0 +1,25 @@
+{
+  "binary": "tests/fixtures/data.elf",
+  "section": null,
+  "scanned": "sections",
+  "xrefs": true,
+  "count": 1,
+  "blobs": [
+    {
+      "address": 2097472,
+      "address_hex": "0x200140",
+      "kind": "gzip",
+      "length": 44,
+      "section": ".rodata",
+      "file": null,
+      "xrefs_count": 1,
+      "functions": [
+        {
+          "name": "packed",
+          "address": 2101632,
+          "address_hex": "0x201180"
+        }
+      ]
+    }
+  ]
+}

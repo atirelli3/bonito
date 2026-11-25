@@ -1,0 +1,114 @@
+{
+  "binary": "tests/fixtures/hello.elf",
+  "count": 4,
+  "total": 4,
+  "error": null,
+  "warnings": [],
+  "summary": {
+    "entry": {
+      "name": "_start",
+      "address": 2101600,
+      "address_hex": "0x201160"
+    },
+    "main": {
+      "name": "main",
+      "address": 2101568,
+      "address_hex": "0x201140"
+    },
+    "reachable_from_entry": 3,
+    "no_callers": 2,
+    "code_bytes": 98,
+    "size_buckets": [
+      {
+        "bucket": "0",
+        "min_size": 0,
+        "max_size": 0,
+        "count": 0
+      },
+      {
+        "bucket": "1-15",
+        "min_size": 1,
+        "max_size": 15,
+        "count": 0
+      },
+      {
+        "bucket": "16-63",
+        "min_size": 16,
+        "max_size": 63,
+        "count": 4
+      },
+      {
+        "bucket": "64-255",
+        "min_size": 64,
+        "max_size": 255,
+        "count": 0
+      },
+      {
+        "bucket": "256-1023",
+        "min_size": 256,
+        "max_size": 1023,
+        "count": 0
+      },
+      {
+        "bucket": "1024-4095",
+        "min_size": 1024,
+        "max_size": 4095,
+        "count": 0
+      },
+      {
+        "bucket": "4096+",
+        "min_size": 4096,
+        "max_size": null,
+        "count": 0
+      }
+    ],
+    "largest": [
+      {
+        "name": "_start",
+        "address": 2101600,
+        "address_hex": "0x201160",
+        "aliases": [
+          "sub_201160"
+        ],
+        "object_location": null,
+        "size": 34
+      },
+      {
+        "name": "main",
+        "address": 2101568,
+        "address_hex": "0x201140",
+        "aliases": [
+          "sub_201140"
+        ],
+        "object_location": null,
+        "size": 32
+      },
+      {
+        "name": "square",
+        "address": 2101536,
+        "address_hex": "0x201120",
+        "aliases": [
+          "sub_201120"
+        ],
+        "object_location": null,
+        "size": 16
+      },
+      {
+        "name": "add",
+        "address": 2101552,
+        "address_hex": "0x201130",
+        "aliases": [
+          "sub_201130"
+        ],
+        "object_location": null,
+        "size": 16
+      }
+    ],
+    "runtime": [],
+    "limits": {
+      "maxinstruction": 100000,
+      "jumptablemax": 1024,
+      "over": []
+    }
+  }
+}

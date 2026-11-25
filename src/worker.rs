@@ -2,7 +2,10 @@
 
 use crate::app::{Msg, Request};
 use crate::keymap::View;
-use crate::kuna::{self, Decompiled, Disassembly, Hexdump, Kuna, Op, Pcode, Reply, Varnode, Xrefs};
+use crate::kuna::{
+    self, Blobs, Crypto, Decompiled, Disassembly, Hexdump, Kuna, Located, Op, Pcode, Reply,
+    Strings, Summary, Varnode, Xrefs,
+};
 use std::io;
 use std::iter::once;
 use std::panic::{self, AssertUnwindSafe};
@@ -112,8 +115,12 @@ fn lines_of(
         View::Xrefs => Ok(xrefs_reply(kuna.xrefs(binary, address)?)),
         View::Hex => Ok(hex_reply(kuna.hexdump(binary, address)?)),
         View::PCode => Ok(pcode_reply(kuna.pcode(binary, address)?)),
-        // ponytail: #9 adds these; nothing asks for them yet.
-        View::Strings | View::CallGraph | View::Summary => Err(kuna::Error::Reported(format!(
+        View::Strings => Ok(strings_reply(kuna.strings(binary)?)),
+        View::Crypto => Ok(crypto_reply(kuna.crypto(binary)?)),
+        View::Blobs => Ok(blobs_reply(kuna.blobs(binary)?)),
+        View::Summary => Ok(summary_reply(kuna.summary(binary)?)),
+        // ponytail: #12 adds the call graph; nothing asks for it yet.
+        View::CallGraph => Err(kuna::Error::Reported(format!(
             "the {view:?} view is not available in bonito yet"
         ))),
     }
@@ -222,6 +229,186 @@ fn xrefs_reply(reply: Reply<Xrefs>) -> Reply<Vec<String>> {
         data: lines,
         notes: join_notes(said, cut),
     }
+}
+
+/// How many functions a row names before it says how many more.
+const MAX_USERS: usize = 5;
+
+/// `  ← main, sub_1…` for the functions that use something; nothing when none does.
+fn callers(functions: &[Located]) -> String {
+    let names: Vec<&str> = functions
+        .iter()
+        .take(MAX_USERS)
+        .map(|function| function.name.as_str())
+        .collect();
+    if names.is_empty() {
+        return String::new();
+    }
+    let more = functions.len().saturating_sub(MAX_USERS);
+    let tail = if more > 0 {
+        format!(", …+{more}")
+    } else {
+        String::new()
+    };
+    format!("  ← {}{tail}", names.join(", "))
+}
+
+/// The section a row lies in, `?` when kuna could not tell.
+fn in_section(section: &Option<kuna::Text>) -> &str {
+    section.as_ref().map_or("?", |section| section.as_str())
+}
+
+/// `rows` as the lines of a reply, `empty` when there are none; `notes` and a cut listing are the reply's notes.
+fn rows_reply(
+    notes: impl IntoIterator<Item = String>,
+    rows: impl Iterator<Item = String>,
+    empty: &str,
+) -> Reply<Vec<String>> {
+    let (mut lines, cut) = bounded(rows);
+    if lines.is_empty() {
+        lines.push(empty.to_string());
+    }
+    Reply {
+        data: lines,
+        notes: join_notes(notes, cut),
+    }
+}
+
+/// Says so when kuna scanned segments, not sections: the section table was unusable, so the scan covers whatever
+/// is mapped (a packer's own data, say) and a listing, an empty one included, may not be the program's.
+fn scan_note(scanned: &kuna::Text) -> Option<String> {
+    (scanned.as_str() != "sections").then(|| {
+        format!(
+            "scanned by {}, not by sections: the section table is unusable, unpack the binary first",
+            scanned.as_str()
+        )
+    })
+}
+
+/// Strings as `0x200120  .rodata  hello  ← say` lines.
+fn strings_reply(reply: Reply<Strings>) -> Reply<Vec<String>> {
+    let Reply { data, notes } = reply;
+    let rows = data.strings.iter().map(|row| {
+        let (section, text) = (in_section(&row.section), row.text.as_str());
+        format!(
+            "{:#x}  {section}  {text}{}",
+            row.address,
+            callers(&row.functions)
+        )
+    });
+    let said = notes.into_iter().chain(scan_note(&data.scanned));
+    rows_reply(said, rows, "no strings found")
+}
+
+/// Crypto constants as `0x201192  .text  TEA/XTEA  delta 0x9E3779B9  ← tea_step` lines.
+fn crypto_reply(reply: Reply<Crypto>) -> Reply<Vec<String>> {
+    let Reply { data, notes } = reply;
+    let rows = data.constants.iter().map(|row| {
+        let (section, algorithm) = (in_section(&row.section), row.algorithm.as_str());
+        let name = row.name.as_str();
+        format!(
+            "{:#x}  {section}  {algorithm}  {name}{}",
+            row.address,
+            callers(&row.functions)
+        )
+    });
+    let said = notes.into_iter().chain(scan_note(&data.scanned));
+    rows_reply(said, rows, "no crypto constants found")
+}
+
+/// Embedded files as `0x200140  .rodata  gzip  44 bytes  ← packed` lines.
+fn blobs_reply(reply: Reply<Blobs>) -> Reply<Vec<String>> {
+    let Reply { data, notes } = reply;
+    let rows = data.blobs.iter().map(|row| {
+        let (section, kind) = (in_section(&row.section), row.kind.as_str());
+        let length = row.length;
+        format!(
+            "{:#x}  {section}  {kind}  {length} bytes{}",
+            row.address,
+            callers(&row.functions)
+        )
+    });
+    let said = notes.into_iter().chain(scan_note(&data.scanned));
+    rows_reply(said, rows, "no embedded files found")
+}
+
+/// The summary as lines: the loader's warnings first (at most `MAX_NOTES`; they also reach the status line, unless
+/// kuna printed them on stderr too), then the entry point, the counts and the largest functions.
+fn summary_reply(reply: Reply<Summary>) -> Reply<Vec<String>> {
+    let Reply { data, notes } = reply;
+    let warnings = data
+        .warnings
+        .iter()
+        .take(MAX_NOTES)
+        .map(|warning| format!("warning: {}", warning.as_str()));
+    let (lines, cut) = bounded(warnings.chain(overview_rows(&data)));
+    let stderr = notes.clone().unwrap_or_default();
+    let said = notes.into_iter().chain(
+        data.warnings
+            .iter()
+            .map(|warning| warning.as_str())
+            .filter(|warning| !stderr.contains(warning))
+            .map(str::to_string),
+    );
+    Reply {
+        data: lines,
+        notes: join_notes(said, cut),
+    }
+}
+
+/// The entry point, the counts, the size buckets and the largest functions of a summary.
+fn overview_rows(data: &Summary) -> impl Iterator<Item = String> {
+    let overview = &data.summary;
+    let spot = |label: &str, at: &Option<Located>| match at {
+        Some(function) => format!(
+            "{label}: {}  {:#x}",
+            function.name.as_str(),
+            function.address
+        ),
+        None => format!("{label}: none"),
+    };
+    let buckets: Vec<String> = overview
+        .size_buckets
+        .iter()
+        .filter(|bucket| bucket.count > 0)
+        .map(|bucket| format!("{} bytes ×{}", bucket.bucket.as_str(), bucket.count))
+        .collect();
+    let sizes = if buckets.is_empty() {
+        "none".to_string()
+    } else {
+        buckets.join(", ")
+    };
+    let reach = match overview.reachable_from_entry {
+        Some(reached) => format!("{reached} reachable from the entry"),
+        None => "reachable from the entry: unknown".to_string(),
+    };
+    let counts = format!(
+        "functions: {} ({reach}, {} with no callers)",
+        data.total, overview.no_callers
+    );
+    let largest: Vec<String> = overview
+        .largest
+        .iter()
+        .map(|function| {
+            format!(
+                "  {:#x}  {}  {}",
+                function.address,
+                function.size,
+                function.name.as_str()
+            )
+        })
+        .collect();
+    [
+        spot("entry", &overview.entry),
+        spot("main", &overview.main),
+        counts,
+        format!("code: {} bytes", overview.code_bytes),
+        format!("sizes: {sizes}"),
+        String::new(),
+        "largest functions:".to_string(),
+    ]
+    .into_iter()
+    .chain(largest)
 }
 
 /// A hexdump as `0x201140  50 bf 03 …  P...` lines. The digits and the text are forced to hex digits and printable
