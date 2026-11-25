@@ -5,7 +5,7 @@ use crate::cache::{Cache, Key};
 use crate::kuna::Scratch;
 use std::sync::mpsc;
 
-fn pinned_kuna() -> Kuna {
+pub(super) fn pinned_kuna() -> Kuna {
     let exe = if cfg!(windows) { "kuna.exe" } else { "kuna" };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target/kuna")
@@ -14,7 +14,7 @@ fn pinned_kuna() -> Kuna {
     kuna::locate(Some(&path), &sample).expect("the pinned kuna (scripts/kuna.sh)")
 }
 
-fn hello() -> PathBuf {
+pub(super) fn hello() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.elf")
 }
 

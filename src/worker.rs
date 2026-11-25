@@ -662,9 +662,11 @@ fn short_pointers(data: &Xrefs) -> Option<String> {
     })
 }
 
+mod export;
 mod graph;
 mod reference;
 
+pub use export::spawn as spawn_export;
 use graph::graph_lines;
 pub use reference::spawn as spawn_reference;
 use reference::{catalog_reply, docs_reply, modes_reply};

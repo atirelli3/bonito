@@ -1,6 +1,4 @@
 //! The per-user cache: one folder per analysed binary, in the user's cache directory.
-// ponytail: #85 and the tasks after it read these; remove this `allow` when the last of them does.
-#![allow(dead_code)]
 
 mod index;
 
@@ -102,14 +100,53 @@ impl Cache {
         (found == self.key).then_some(self.entry.as_path())
     }
 
-    /// Writes this key into `dir`, the folder an export fills; written last, so a folder with it is a whole one.
+    /// Writes this key into `dir`, the folder an export fills; a `key.json` kuna left there is replaced, not opened.
     pub fn write_key(&self, dir: &Path) -> io::Result<()> {
         let json = key_json(&self.key)?;
         if json.len() as u64 > KEY_LIMIT {
             let message = format!("{KEY_FILE} would be longer than {KEY_LIMIT} bytes");
             return Err(io::Error::new(io::ErrorKind::InvalidInput, message));
         }
-        fs::write(dir.join(KEY_FILE), json)
+        let path = dir.join(KEY_FILE);
+        remove_any(&path)?;
+        let written = open_new(&path).and_then(|mut file| file.write_all(json.as_bytes()));
+        written.map_err(|error| at(&path, error))
+    }
+
+    /// The binary this cache is of.
+    pub fn binary(&self) -> &Path {
+        Path::new(&self.key.binary)
+    }
+
+    /// Whether the binary still has the size and time the key was taken with.
+    pub fn unchanged(&self) -> bool {
+        Key::of(self.binary(), &self.key.kuna).is_ok_and(|now| now == self.key)
+    }
+
+    /// Removes this session's export folder, whatever is there; there being none is fine.
+    pub fn clear_partial(&self) -> io::Result<()> {
+        remove_any(&self.partial_dir())
+    }
+
+    /// Makes this session's finished export the entry; another session's finished one is kept and ours dropped.
+    pub fn publish(&self) -> io::Result<()> {
+        let partial = self.partial_dir();
+        if !fs::symlink_metadata(&partial).is_ok_and(|meta| meta.is_dir()) {
+            return Err(at(&partial, io::Error::other("not an export folder")));
+        }
+        self.write_key(&partial)?;
+        if fs::rename(&partial, &self.entry).is_ok() {
+            return Ok(());
+        }
+        if self.complete().is_some() {
+            return remove_any(&partial);
+        }
+        remove_any(&self.entry)?;
+        match fs::rename(&partial, &self.entry) {
+            Ok(()) => Ok(()),
+            Err(_) if self.complete().is_some() => remove_any(&partial),
+            Err(error) => Err(at(&self.entry, error)),
+        }
     }
 
     /// The folder this session's export fills, next to the entry.
@@ -174,6 +211,24 @@ impl Cache {
             let _ = fs::remove_file(&temp);
         }
         published
+    }
+}
+
+/// Removes the file, link or folder at `path`, a link itself and not what it points at; there being none is fine.
+fn remove_any(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(at(path, error)),
+        Ok(meta) if meta.is_dir() => forgive_gone(fs::remove_dir_all(path), path),
+        Ok(_) => forgive_gone(fs::remove_file(path), path),
+    }
+}
+
+/// `result`, except that something already removed by someone else is fine.
+fn forgive_gone(result: io::Result<()>, path: &Path) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(at(path, error)),
+        _ => Ok(()),
     }
 }
 
@@ -686,6 +741,158 @@ mod tests {
         );
         cache.write_key(&cache.entry).expect("writes the key");
         assert_eq!(cache.serving_dir(), Some(cache.entry.clone()));
+    }
+
+    /// A cache of a real file in `scratch`'s `files` folder, and its cache folder `cache`.
+    fn cache_of_a_file(scratch: &Scratch, content: &[u8]) -> (Cache, PathBuf) {
+        let file = scratch.path().join("sample.bin");
+        fs::write(&file, content).expect("writes");
+        let root = scratch.path().join("cache");
+        let cache = Cache::open_in(&root, Key::of(&file, "1.1005").expect("a key")).expect("opens");
+        (cache, file)
+    }
+
+    fn filled_partial(cache: &Cache) {
+        let partial = cache.partial_dir();
+        fs::create_dir(&partial).expect("makes the folder");
+        fs::write(partial.join("a.c"), "int a;").expect("writes");
+    }
+
+    #[test]
+    fn a_finished_export_is_published_with_its_key_last() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        filled_partial(&cache);
+        cache.publish().expect("publishes");
+        assert_eq!(cache.complete(), Some(cache.entry.as_path()));
+        assert_eq!(
+            fs::read_to_string(cache.entry.join("a.c")).expect("reads"),
+            "int a;"
+        );
+        assert!(!cache.partial_dir().exists(), "the folder became the entry");
+    }
+
+    #[test]
+    fn an_export_another_session_published_first_is_kept_and_ours_dropped() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        filled_partial(&cache);
+        cache.publish().expect("publishes");
+        fs::write(cache.entry.join("a.c"), "theirs").expect("writes");
+        filled_partial(&cache);
+        cache.publish().expect("publishes");
+        assert_eq!(
+            fs::read_to_string(cache.entry.join("a.c")).expect("reads"),
+            "theirs"
+        );
+        assert!(!cache.partial_dir().exists());
+    }
+
+    #[test]
+    fn a_folder_in_the_entrys_place_that_is_not_a_finished_export_is_replaced() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        fs::create_dir(&cache.entry).expect("a leftover folder");
+        fs::write(cache.entry.join("junk"), "x").expect("writes");
+        filled_partial(&cache);
+        cache.publish().expect("publishes");
+        assert!(!cache.entry.join("junk").exists());
+        assert!(cache.entry.join("a.c").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_entrys_place_is_removed_and_what_it_pointed_at_is_left_alone() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        let elsewhere = scratch.path().join("elsewhere");
+        fs::create_dir(&elsewhere).expect("a folder");
+        fs::write(elsewhere.join("precious"), "x").expect("writes");
+        std::os::unix::fs::symlink(&elsewhere, &cache.entry).expect("links");
+        filled_partial(&cache);
+        cache.publish().expect("publishes");
+        assert!(
+            elsewhere.join("precious").is_file(),
+            "the target is untouched"
+        );
+        assert!(
+            !fs::symlink_metadata(&cache.entry)
+                .expect("exists")
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_file_kuna_left_as_a_link_or_a_fifo_is_replaced_not_opened() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        let precious = scratch.path().join("precious");
+        fs::write(&precious, "keep me").expect("writes");
+        filled_partial(&cache);
+        let key = cache.partial_dir().join(KEY_FILE);
+        std::os::unix::fs::symlink(&precious, &key).expect("links");
+        cache.publish().expect("publishes over a link");
+        assert_eq!(fs::read_to_string(&precious).expect("reads"), "keep me");
+        assert_eq!(cache.complete(), Some(cache.entry.as_path()));
+        fs::remove_dir_all(&cache.entry).expect("removes");
+        filled_partial(&cache);
+        let made = std::process::Command::new("mkfifo").arg(&key).status();
+        assert!(made.is_ok_and(|status| status.success()), "mkfifo");
+        cache
+            .publish()
+            .expect("publishes over a fifo without waiting for a reader");
+        assert_eq!(cache.complete(), Some(cache.entry.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_folder_that_is_a_link_is_not_published() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        let elsewhere = scratch.path().join("elsewhere");
+        fs::create_dir(&elsewhere).expect("a folder");
+        std::os::unix::fs::symlink(&elsewhere, cache.partial_dir()).expect("links");
+        assert!(cache.publish().is_err());
+        assert!(
+            !elsewhere.join(KEY_FILE).exists(),
+            "nothing was written through it"
+        );
+    }
+
+    #[test]
+    fn this_sessions_folder_is_cleared_but_a_missing_one_is_fine() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        cache.clear_partial().expect("nothing to clear");
+        filled_partial(&cache);
+        cache.clear_partial().expect("clears");
+        assert!(!cache.partial_dir().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_where_the_folder_goes_is_removed_without_following_it() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        let elsewhere = scratch.path().join("elsewhere");
+        fs::create_dir(&elsewhere).expect("a folder");
+        fs::write(elsewhere.join("precious"), "x").expect("writes");
+        std::os::unix::fs::symlink(&elsewhere, cache.partial_dir()).expect("links");
+        cache.clear_partial().expect("clears");
+        assert!(elsewhere.join("precious").is_file());
+        assert!(fs::symlink_metadata(cache.partial_dir()).is_err());
+    }
+
+    #[test]
+    fn the_binary_is_unchanged_until_its_size_or_time_changes() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, file) = cache_of_a_file(&scratch, b"abc");
+        assert!(cache.unchanged());
+        fs::write(&file, b"abcd").expect("writes");
+        assert!(!cache.unchanged());
+        fs::remove_file(&file).expect("removes");
+        assert!(!cache.unchanged(), "a binary that is gone has changed");
     }
 
     #[cfg(unix)]

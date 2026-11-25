@@ -22,6 +22,7 @@ mod text;
 use crate::options::Options;
 pub use scratch::Scratch;
 
+pub use export::{Exported, Progress};
 pub use graph::{Graph, Node};
 pub use json::{
     Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Located, Op, Pcode, Strings,

@@ -1,6 +1,6 @@
 //! The commands about kuna itself: its option catalog, its modes and its docs, and the options a decompile runs with.
 
-use super::{App, Request};
+use super::{App, Export, Request};
 use crate::keymap::View;
 use crate::kuna::{self, Reference, Reply};
 use crate::options::{Options, Shared, check_name};
@@ -26,6 +26,22 @@ impl App {
             Ok(reply) => Knowledge::Ready(reply.data, reply.notes),
             Err(error) => Knowledge::Failed(error.to_string()),
         };
+    }
+
+    /// How the export into the cache is going, or why it failed: for the status line.
+    pub fn export_note(&self) -> Option<String> {
+        match &self.export {
+            Export::Idle => None,
+            Export::Running { total: None, .. } => Some("exporting…".to_string()),
+            Export::Running {
+                done,
+                total: Some(total),
+            } => Some(format!("exporting {done}/{total} functions")),
+            Export::Ready { functions, failed } => (*failed > 0).then(|| {
+                format!("cache: {failed} of {functions} functions could not be decompiled")
+            }),
+            Export::Failed(why) => Some(format!("no cache export: {why}")),
+        }
     }
 
     /// What kuna said loading its reference data, or why it could not: for the status line.
@@ -105,7 +121,8 @@ impl App {
     /// `decompile options: mode=reliable namestyle=ghidra` while any is set, for the status line.
     pub fn options_note(&self) -> Option<String> {
         let options = self.options();
-        (!options.is_default()).then(|| format!("decompile options: {options}"))
+        let cache = if self.cache { " (cache not used)" } else { "" };
+        (!options.is_default()).then(|| format!("decompile options: {options}{cache}"))
     }
 
     /// The reference data, or why it is not there (still loading, or failed).

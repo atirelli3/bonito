@@ -8,7 +8,7 @@ use crate::ui;
 use crate::view::Pane;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{Event, KeyEvent, KeyEventKind};
 use ratatui::layout::Rect;
 use std::collections::HashMap;
 use std::error::Error;
@@ -16,7 +16,6 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::thread::{self, JoinHandle};
 
 /// How many loaded views are kept: each can hold a hundred thousand lines.
 const MAX_VIEWS: usize = 64;
@@ -42,6 +41,8 @@ pub enum Msg {
     Functions(Result<Reply<Vec<Function>>, kuna::Error>),
     /// The answer to the reference request: kuna's options, modes and docs.
     Reference(Result<Reply<Reference>, kuna::Error>),
+    /// How the whole-binary export is going.
+    Export(Export),
     /// The answer to a `Request`: the lines of that view of the function at `address`.
     Code {
         view: View,
@@ -53,6 +54,19 @@ pub enum Msg {
     /// SIGTERM or SIGHUP arrived: its name.
     #[cfg(unix)]
     Signal(&'static str),
+}
+
+/// How the whole-binary export into the cache is going.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Export {
+    /// Nothing is being exported.
+    Idle,
+    /// How many functions are done and how many there will be, not known while the binary loads.
+    Running { done: u64, total: Option<u64> },
+    /// It is in the cache; `failed` of its `functions` could not be decompiled.
+    Ready { functions: u64, failed: u64 },
+    /// It is not in the cache, and this says why.
+    Failed(String),
 }
 
 /// A view of the function at `address`, asked of the worker.
@@ -144,6 +158,8 @@ pub struct App {
     pub functions: Functions,
     /// kuna's options, modes and docs.
     pub reference: Knowledge,
+    /// How the whole-binary export is going.
+    pub export: Export,
     /// What kuna said while still succeeding, or why the last request failed.
     pub status: Option<String>,
     /// What the last key or command answered ("not a command: x"); the next key clears it.
@@ -166,6 +182,8 @@ pub struct App {
     requests: Sender<Request>,
     /// The options a decompile runs with, shared with the worker.
     shared: Arc<Shared>,
+    /// Whether there is a cache for the binary.
+    cache: bool,
     /// The height of the panes' text, as drawn last.
     rows: usize,
     running: bool,
@@ -184,6 +202,8 @@ impl App {
             kuna_version,
             functions: Functions::Loading,
             reference: Knowledge::Loading,
+            export: Export::Idle,
+            cache: false,
             shared: Arc::default(),
             status: None,
             message: None,
@@ -200,6 +220,11 @@ impl App {
             rows: 0,
             running: true,
         }
+    }
+
+    /// Records that there is a cache for the binary.
+    pub fn use_cache(&mut self) {
+        self.cache = true;
     }
 
     /// Takes the height of the panes' text; the cursors stay in view.
@@ -274,6 +299,7 @@ impl App {
                 self.status = Some(error.to_string());
             }
             Msg::Reference(answer) => self.on_reference(answer),
+            Msg::Export(status) => self.export = status,
             Msg::Code {
                 view,
                 address,
@@ -725,33 +751,6 @@ fn row_address(pane: &Pane) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The function `word` names: its name, an alias or its entry address (`0x…`); `contained` takes any address in it.
-// ponytail: the first match in address order wins; duplicate names, and an alias equal to another's name, are not told apart.
-fn function_named<'a>(
-    functions: &'a [Function],
-    word: &str,
-    contained: bool,
-) -> Option<&'a Function> {
-    let address = word
-        .strip_prefix("0x")
-        .or_else(|| word.strip_prefix("0X"))
-        .and_then(|digits| u64::from_str_radix(digits, 16).ok());
-    let entry = |function: &&Function| Some(function.address) == address;
-    let inside = |function: &&Function| {
-        let end = function.address.saturating_add(function.size.max(1));
-        contained && address.is_some_and(|at| (function.address..end).contains(&at))
-    };
-    let named = |function: &&Function| {
-        function.name.as_str() == word
-            || function.aliases.iter().any(|alias| alias.as_str() == word)
-    };
-    functions
-        .iter()
-        .find(entry)
-        .or_else(|| functions.iter().find(inside))
-        .or_else(|| functions.iter().find(named))
-}
-
 /// Draws the app and applies messages until it quits or the terminal fails; no sender left is an error too.
 pub fn run<B: Backend>(
     terminal: &mut Terminal<B>,
@@ -770,41 +769,16 @@ where
     Ok(())
 }
 
-/// Forwards terminal events to the loop; a read failure is sent too, then the thread ends.
-// ponytail: never joined: it blocks in `event::read` until the process exits.
-pub fn spawn_input(tx: Sender<Msg>) -> io::Result<JoinHandle<()>> {
-    thread::Builder::new().spawn(move || {
-        loop {
-            let event = event::read();
-            let failed = event.is_err();
-            if tx.send(Msg::Input(event)).is_err() || failed {
-                break;
-            }
-        }
-    })
-}
-
-/// Catches SIGTERM and SIGHUP from here on and forwards each one to the loop.
-// ponytail: never joined: it waits for signals until the process exits. It never ends on its own: a dropped
-// `Signals` would leave later signals ignored, not fatal. A repeat waits for the same cleanup (a terminal often
-// sends SIGHUP then SIGTERM); only SIGKILL cuts a hung one short.
-#[cfg(unix)]
-pub fn spawn_signals(tx: Sender<Msg>) -> io::Result<JoinHandle<()>> {
-    use signal_hook::consts::{SIGHUP, SIGTERM};
-    use signal_hook::iterator::Signals;
-    use signal_hook::low_level::signal_name;
-    let mut signals = Signals::new([SIGTERM, SIGHUP])?;
-    thread::Builder::new().spawn(move || {
-        for signal in signals.forever() {
-            // ponytail: no loop left to tell: bonito is already ending.
-            let _ = tx.send(Msg::Signal(signal_name(signal).unwrap_or("a signal")));
-        }
-    })
-}
-
+mod events;
+mod lookup;
 mod options;
 
+pub use events::spawn_input;
+#[cfg(unix)]
+pub use events::spawn_signals;
 pub use options::Knowledge;
+
+use lookup::function_named;
 
 #[cfg(test)]
 mod tests;

@@ -190,6 +190,7 @@ fn status_line(app: &App) -> String {
     parts.extend([&app.message, &app.status].into_iter().flatten().cloned());
     parts.extend(app.view_note().map(str::to_string));
     parts.extend(app.options_note());
+    parts.extend(app.export_note());
     parts.extend(app.reference_note());
     parts.extend(app.warning.clone());
     parts.push(format!("{name} · kuna {}", app.kuna_version));

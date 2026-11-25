@@ -1,6 +1,4 @@
 //! The whole-binary export: `kuna decompile-project --stream` into a folder, and the progress it reports.
-// ponytail: #88 runs the export; remove this `allow` then.
-#![allow(dead_code)]
 
 use super::text::Text;
 use super::{Error, Kuna, Reply, query_args};
@@ -43,6 +41,8 @@ pub struct Progress {
     pub total: Option<u64>,
     #[serde(rename = "functions_done")]
     pub done: u64,
+    // ponytail: no view shows how many functions have failed so far.
+    #[allow(dead_code)]
     #[serde(rename = "functions_failed")]
     pub failed: u64,
     /// Why it failed, when it did.
