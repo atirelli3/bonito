@@ -67,6 +67,7 @@ pub fn spawn_with(
         if tx.send(Msg::Functions(functions)).is_err() {
             return;
         }
+        let mut graph = None;
         loop {
             let oldest = match requests.recv_timeout(IDLE) {
                 Ok(request) => request,
@@ -75,7 +76,8 @@ pub fn spawn_with(
             };
             for Request { view, address } in newest_per_view(oldest, &requests) {
                 let (options, generation) = shared.current();
-                let answer = guarded(|| lines_of(&kuna, &binary, view, address, &options));
+                let answer =
+                    guarded(|| lines_of(&kuna, &binary, view, address, &options, &mut graph));
                 let msg = Msg::Code {
                     view,
                     address,
@@ -125,6 +127,7 @@ fn lines_of(
     view: View,
     address: u64,
     options: &Options,
+    graph: &mut Option<kuna::Graph>,
 ) -> Result<Reply<Vec<String>>, kuna::Error> {
     match view {
         View::Decompile => decompile_reply(kuna.decompile(binary, address, options)?),
@@ -139,10 +142,7 @@ fn lines_of(
         View::Catalog => Ok(catalog_reply(kuna.catalog()?)),
         View::Modes => Ok(modes_reply(kuna.modes()?)),
         View::Docs => docs_reply(kuna, address),
-        // ponytail: #12 adds the call graph; nothing asks for it yet.
-        View::CallGraph => Err(kuna::Error::Reported(format!(
-            "the {view:?} view is not available in bonito yet"
-        ))),
+        View::CallGraph => graph_lines(graph, || kuna.graph(binary, address), address),
     }
 }
 
@@ -596,8 +596,10 @@ fn short_pointers(data: &Xrefs) -> Option<String> {
     })
 }
 
+mod graph;
 mod reference;
 
+use graph::graph_lines;
 pub use reference::spawn as spawn_reference;
 use reference::{catalog_reply, docs_reply, modes_reply};
 

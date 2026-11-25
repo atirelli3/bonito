@@ -124,27 +124,20 @@ fn an_idle_worker_ends_once_kuna_is_cancelled_even_while_a_sender_lives() {
 }
 
 #[test]
-fn a_view_kuna_cannot_give_yet_is_an_error_not_silence() {
+fn the_worker_answers_call_graph_requests_for_two_functions() {
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    requests
-        .send(request(View::CallGraph, 0x201140))
-        .expect("sends");
+    let worker = spawn(Arc::new(pinned_kuna()), hello(), queue, tx).expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    for (address, title) in [(0x201140, "main  0x201140"), (0x201120, "square  0x201120")] {
+        requests
+            .send(request(View::CallGraph, address))
+            .expect("sends");
+        let lines = next_lines(&rx, View::CallGraph, address);
+        assert_eq!(lines[0], title);
+    }
     drop(requests);
-    spawn(Arc::new(pinned_kuna()), hello(), queue, tx)
-        .expect("spawns")
-        .join()
-        .expect("finishes");
-    assert!(matches!(rx.recv(), Ok(Msg::Functions(_))));
-    let Ok(Msg::Code {
-        view: View::CallGraph,
-        answer: Err(kuna::Error::Reported(message)),
-        ..
-    }) = rx.recv()
-    else {
-        panic!("expected an error answer for the CallGraph view");
-    };
-    assert!(message.contains("CallGraph"), "{message}");
+    worker.join().expect("finishes");
 }
 
 fn xrefs_of(text: &str) -> Reply<Vec<String>> {

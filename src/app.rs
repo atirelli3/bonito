@@ -108,7 +108,6 @@ pub fn view_name(view: View) -> &'static str {
 /// Whether `view` is of one function, asked for by its entry address, and not of the whole binary (address 0).
 fn per_function(view: View) -> bool {
     match view {
-        // ponytail: #12 decides for the call graph; until then `open_view` refuses it.
         View::Decompile
         | View::Disassembly
         | View::Xrefs
@@ -226,6 +225,7 @@ impl App {
         let verb = match shown.request.view {
             View::Decompile => "decompiling",
             View::Disassembly => "disassembling",
+            View::CallGraph => "loading the call graph of",
             View::Xrefs
             | View::Strings
             | View::Crypto
@@ -233,7 +233,6 @@ impl App {
             | View::Catalog
             | View::Modes
             | View::Docs
-            | View::CallGraph
             | View::Hex
             | View::PCode
             | View::Summary => "loading",
@@ -328,7 +327,6 @@ impl App {
     }
 
     /// Does what `action` asks.
-    // ponytail: #12 adds the call graph; until then it says it is not available.
     // Every action is named so a new one cannot be dropped by accident.
     fn apply(&mut self, action: Action) {
         match action {
@@ -426,10 +424,6 @@ impl App {
         }
     }
 
-    fn not_yet(&mut self) {
-        self.message = Some("not available yet".to_string());
-    }
-
     /// Moves the cursor of the pane that has the focus; a jump motion in the code leaves its line in the jumplist.
     fn move_cursor(&mut self, motion: Motion, count: Option<u32>) {
         let jump = self.focus == Focus::Code
@@ -502,14 +496,25 @@ impl App {
             self.message = Some("nothing to follow yet".to_string());
             return;
         };
-        let (view, word) = (shown.request.view, pane.word());
+        let view = shown.request.view;
+        let graph = view == View::CallGraph;
+        let word = if graph {
+            row_address(pane)
+        } else {
+            pane.word()
+        };
         let view = if per_function(view) {
             view
         } else {
             View::Decompile
         };
         let Some(word) = word else {
-            self.message = Some("no word under the cursor".to_string());
+            let why = if graph {
+                "no function on this line"
+            } else {
+                "no word under the cursor"
+            };
+            self.message = Some(why.to_string());
             return;
         };
         match self.lookup(&word, false) {
@@ -624,12 +629,9 @@ impl App {
         }
     }
 
-    /// `gd` `ga` `gr` `gh` `gp`, or Enter in the list: `view` of the selected function, or of the one shown (the
+    /// `gd` `ga` `gr` `gh` `gp` `gc`, or Enter in the list: `view` of the selected function, or of the one shown (the
     /// selected one when the view shown is of the whole binary); `gs` `gi` `:crypto` `:blobs`: the whole binary.
     fn open_view(&mut self, view: View) {
-        if view == View::CallGraph {
-            return self.not_yet();
-        }
         if !per_function(view) {
             let name = self.binary_name();
             return self.jump(Request { view, address: 0 }, name);
@@ -712,6 +714,15 @@ impl App {
             _ => self.message = Some(format!("not a command: {line}")),
         }
     }
+}
+
+/// The `0x…` address on the call graph row the cursor is on (`name  0x…  tags`).
+// ponytail: a name or kind from the binary can hold `0x…` too; Enter then opens another listed function.
+fn row_address(pane: &Pane) -> Option<String> {
+    let row = pane.lines().get(pane.line())?;
+    row.split_whitespace()
+        .find(|word| word.starts_with("0x"))
+        .map(str::to_string)
 }
 
 /// The function `word` names: its name, an alias or its entry address (`0x…`); `contained` takes any address in it.
