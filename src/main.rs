@@ -76,8 +76,10 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     require_terminal()?;
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    let worker = worker::spawn(Arc::clone(&kuna), binary.clone(), queue, tx.clone())?;
     let (version, warning) = (kuna.version().to_string(), kuna.version_warning());
+    // ponytail: the app owns the options a decompile runs with and the worker reads the app's, so they cannot differ.
+    let mut app = App::new(binary.clone(), version, warning, requests);
+    let worker = worker::spawn_with(Arc::clone(&kuna), binary, app.shared(), queue, tx.clone())?;
     let mut _stop = Stop {
         kuna: Arc::clone(&kuna),
         worker: Some(worker),
@@ -90,7 +92,6 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     // so a hung `kuna --version` can still be killed.
     #[cfg(unix)]
     app::spawn_signals(tx.clone())?;
-    let mut app = App::new(binary, version, warning, requests);
     interact(&mut app, tx, &rx)
 }
 

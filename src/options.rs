@@ -1,8 +1,7 @@
 //! The options a decompile runs with: kuna's `--mode` and `--option NAME VALUE`, chosen by the user.
-// ponytail: #75 and #76 read the rest of it (the catalog check, `:set`, the status line).
-#![allow(dead_code)]
 
 use std::fmt;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// The longest option name, value or mode that is accepted.
 const MAX_LEN: usize = 100;
@@ -47,18 +46,23 @@ impl Options {
 
     /// `name` set to `value`: a name set before keeps its place.
     pub fn with_option(&self, name: &str, value: &str) -> Result<Self, Refused> {
-        check(
-            "option name",
-            name,
-            is_word,
-            "only letters, digits and _ are allowed",
-        )?;
+        check_name(name)?;
+        if name == "mode" {
+            return Err(Refused(format!(
+                "option name {name:?}: set the mode with :mode"
+            )));
+        }
         check(
             "option value",
             value,
             is_value,
             "only letters, digits and _ . : / + - are allowed",
         )?;
+        if value.starts_with("//") || value.contains("://") {
+            return Err(Refused(format!(
+                "option value {value:?}: must not name a network location"
+            )));
+        }
         let mut set = self.set.clone();
         match set.iter().position(|(known, _)| known == name) {
             Some(at) => set[at].1 = value.to_string(),
@@ -86,6 +90,7 @@ impl Options {
         }
     }
 
+    /// The mode, if one is set; none is kuna's `auto`.
     pub fn mode(&self) -> Option<&str> {
         self.mode.as_deref()
     }
@@ -115,6 +120,44 @@ impl Options {
     }
 }
 
+/// The options the next decompile runs with, shared by the app (which changes them) and the worker (which reads them
+/// before each decompile), and a generation that counts the changes: an answer made with an older one is stale.
+/// The options and their generation sit under one lock, so a reader never sees new options with an old generation.
+#[derive(Debug, Default)]
+pub struct Shared {
+    state: Mutex<(Options, u64)>,
+}
+
+impl Shared {
+    /// The options now, and the generation they belong to.
+    pub fn current(&self) -> (Options, u64) {
+        let state = self.lock();
+        (state.0.clone(), state.1)
+    }
+
+    /// The options now.
+    pub fn options(&self) -> Options {
+        self.lock().0.clone()
+    }
+
+    /// The generation of the options now.
+    pub fn generation(&self) -> u64 {
+        self.lock().1
+    }
+
+    /// Makes `options` the ones to use; returns the new generation.
+    pub fn replace(&self, options: Options) -> u64 {
+        let mut state = self.lock();
+        *state = (options, state.1.saturating_add(1));
+        state.1
+    }
+
+    /// The state; a panic elsewhere cannot leave it half written, so a poisoned lock is still good.
+    fn lock(&self) -> MutexGuard<'_, (Options, u64)> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 /// `mode=reliable namestyle=ghidra`, for the status line; nothing when nothing is set.
 impl fmt::Display for Options {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -136,6 +179,16 @@ fn is_word(c: char) -> bool {
 /// What an option value may hold: a word, a number, a path-like name.
 fn is_value(c: char) -> bool {
     is_word(c) || matches!(c, '.' | ':' | '/' | '+' | '-')
+}
+
+/// Whether `name` could be the name of an option: what `with_option` asks of it before anything else.
+pub fn check_name(name: &str) -> Result<(), Refused> {
+    check(
+        "option name",
+        name,
+        is_word,
+        "only letters, digits and _ are allowed",
+    )
 }
 
 /// `text` as a `kind` (`option name`…): not empty, not long, not starting with `-` (kuna would read a flag) and

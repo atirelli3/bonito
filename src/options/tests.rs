@@ -99,6 +99,49 @@ fn exactly_the_longest_name_and_value_are_accepted_and_the_number_of_options_is_
 }
 
 #[test]
+fn the_shared_options_start_empty_and_each_replacement_is_a_new_generation() {
+    let shared = Shared::default();
+    let (none, first) = shared.current();
+    assert!(none.is_default());
+    let options = with(&Options::default(), "namestyle", "ghidra");
+    let second = shared.replace(options.clone());
+    assert!(second > first);
+    assert_eq!(shared.current(), (options.clone(), second));
+    assert_eq!((shared.options(), shared.generation()), (options, second));
+    assert!(shared.replace(Options::default()) > second);
+}
+
+#[test]
+fn a_value_that_names_a_network_location_is_refused_and_mode_is_not_an_option_name() {
+    for value in [
+        "//host/share",
+        "//",
+        "http://h/p",
+        "file:///etc/passwd",
+        "a://b",
+    ] {
+        let error = Options::default().with_option("n", value).expect_err(value);
+        assert!(error.to_string().contains("network"), "{value}: {error}");
+    }
+    for value in ["/usr/lib", "a/b", "a:b", "/a//b", "C:"] {
+        assert!(
+            Options::default().with_option("n", value).is_ok(),
+            "{value}"
+        );
+    }
+    let error = Options::default()
+        .with_option("mode", "x")
+        .expect_err("reserved");
+    assert_eq!(
+        error.to_string(),
+        "option name \"mode\": set the mode with :mode"
+    );
+    assert!(check_name("namestyle").is_ok());
+    let error = check_name("a b").expect_err("space");
+    assert!(error.to_string().contains("only letters"), "{error}");
+}
+
+#[test]
 fn values_kuna_documents_are_accepted() {
     for value in [
         "ghidra",

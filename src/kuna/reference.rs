@@ -1,8 +1,6 @@
 //! What kuna says about itself, none of it about the analysed binary: the option catalog, the mode presets and its
 //! embedded docs.
-// ponytail: #76 checks `:set` and `:mode` against `Reference.catalog` and `.modes`; no view shows a topic's summary.
-// A catalog summary longer than `Text`'s 1024 characters is cut without a mark: the view is a browse line.
-#![allow(dead_code)]
+// ponytail: a catalog summary longer than `Text`'s 1024 characters is cut without a mark: the view is a browse line.
 
 use super::text::{self, Text};
 use super::{Error, Kuna, Limits, Reply, parse, run};
@@ -49,6 +47,8 @@ pub struct Override {
 pub struct Topic {
     pub topic: Text,
     pub title: Text,
+    // ponytail: no view shows a topic's summary yet.
+    #[allow(dead_code)]
     pub summary: Text,
     pub bytes: u64,
 }
