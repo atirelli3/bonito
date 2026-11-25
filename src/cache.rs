@@ -123,6 +123,19 @@ impl Cache {
         Key::of(self.binary(), &self.key.kuna).is_ok_and(|now| now == self.key)
     }
 
+    /// Copies the regular files of the finished export, but for the key, into the new folder `dir`; how many.
+    pub fn export_to(&self, dir: &Path) -> io::Result<usize> {
+        let entry = self
+            .complete()
+            .ok_or_else(|| io::Error::other("no finished export yet"))?;
+        fs::create_dir(dir).map_err(|error| at(dir, error))?;
+        let copied = copy_files(entry, dir);
+        if copied.is_err() {
+            let _ = remove_any(dir);
+        }
+        copied
+    }
+
     /// Removes this session's export folder, whatever is there; there being none is fine.
     pub fn clear_partial(&self) -> io::Result<()> {
         remove_any(&self.partial_dir())
@@ -212,6 +225,25 @@ impl Cache {
         }
         published
     }
+}
+
+/// Copies the regular files of `from` but for the key into `to`, each to a new file of its own, owner-only on Unix.
+// ponytail: a flat folder is assumed, as kuna writes it; and the copy blocks the loop until it is done.
+fn copy_files(from: &Path, to: &Path) -> io::Result<usize> {
+    let mut copied = 0;
+    for item in fs::read_dir(from).map_err(|error| at(from, error))? {
+        let item = item.map_err(|error| at(from, error))?;
+        let name = item.file_name();
+        if name == KEY_FILE || !item.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let (source, target) = (from.join(&name), to.join(&name));
+        let mut input = open_regular(&source).map_err(|error| at(&source, error))?;
+        let mut output = open_new(&target).map_err(|error| at(&target, error))?;
+        io::copy(&mut input, &mut output).map_err(|error| at(&target, error))?;
+        copied += 1;
+    }
+    Ok(copied)
 }
 
 /// Removes the file, link or folder at `path`, a link itself and not what it points at; there being none is fine.
@@ -858,6 +890,128 @@ mod tests {
             !elsewhere.join(KEY_FILE).exists(),
             "nothing was written through it"
         );
+    }
+
+    fn finished(cache: &Cache) {
+        let partial = cache.partial_dir();
+        fs::create_dir(&partial).expect("makes the folder");
+        for (name, text) in [
+            ("a.c", "int a;"),
+            ("a.h", "int a(void);"),
+            ("index.jsonl", "{}\n"),
+        ] {
+            fs::write(partial.join(name), text).expect("writes");
+        }
+        cache.publish().expect("publishes");
+    }
+
+    #[test]
+    fn a_finished_export_is_copied_without_the_key_to_a_new_folder() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        finished(&cache);
+        let target = scratch.path().join("out");
+        assert_eq!(cache.export_to(&target).expect("copies"), 3);
+        let mut names: Vec<String> = fs::read_dir(&target)
+            .expect("lists")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["a.c", "a.h", "index.jsonl"],
+            "key.json stays in the cache"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("a.c")).expect("reads"),
+            "int a;"
+        );
+    }
+
+    #[test]
+    fn an_export_is_not_copied_over_a_folder_that_is_there_or_before_it_is_finished() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        let target = scratch.path().join("out");
+        let error = cache.export_to(&target).expect_err("nothing finished");
+        assert!(error.to_string().contains("no finished export"), "{error}");
+        assert!(!target.exists(), "nothing was made");
+        finished(&cache);
+        fs::create_dir(&target).expect("a folder");
+        fs::write(target.join("mine"), "x").expect("writes");
+        assert!(
+            cache.export_to(&target).is_err(),
+            "never into a folder that exists"
+        );
+        assert_eq!(fs::read_to_string(target.join("mine")).expect("reads"), "x");
+        assert!(!target.join("a.c").exists());
+        let missing_parent = scratch.path().join("no").join("out");
+        assert!(
+            cache.export_to(&missing_parent).is_err(),
+            "no parents are made"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_fails_midway_leaves_no_half_made_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        finished(&cache);
+        let unreadable = cache.entry.join("a.h");
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).expect("chmod");
+        if fs::File::open(&unreadable).is_ok() {
+            return; // running as root: nothing is unreadable
+        }
+        let target = scratch.path().join("out");
+        assert!(cache.export_to(&target).is_err());
+        assert!(
+            !target.exists(),
+            "the folder it made is removed, so a retry can go ahead"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exported_files_are_private_to_the_owner_and_never_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        finished(&cache);
+        fs::set_permissions(cache.entry.join("a.c"), fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+        let target = scratch.path().join("out");
+        cache.export_to(&target).expect("copies");
+        let mode = fs::metadata(target.join("a.c"))
+            .expect("exists")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o177,
+            0,
+            "no execute, nothing for group or others: {mode:o}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_export_is_not_followed_into_the_copy() {
+        let scratch = Scratch::new().expect("a directory");
+        let (cache, _) = cache_of_a_file(&scratch, b"abc");
+        finished(&cache);
+        let secret = scratch.path().join("secret");
+        fs::write(&secret, "private").expect("writes");
+        std::os::unix::fs::symlink(&secret, cache.entry.join("leak.c")).expect("links");
+        let target = scratch.path().join("out");
+        assert_eq!(cache.export_to(&target).expect("copies"), 3);
+        assert!(!target.join("leak.c").exists());
     }
 
     #[test]

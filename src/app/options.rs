@@ -4,6 +4,7 @@ use super::{App, Export, Request};
 use crate::keymap::View;
 use crate::kuna::{self, Reference, Reply};
 use crate::options::{Options, Shared, check_name};
+use std::path::Path;
 use std::sync::Arc;
 
 /// The title of a view that is about kuna, not about a function of the binary.
@@ -41,6 +42,21 @@ impl App {
                 format!("cache: {failed} of {functions} functions could not be decompiled")
             }),
             Export::Failed(why) => Some(format!("no cache export: {why}")),
+        }
+    }
+
+    /// `:export DIR`: copies the finished export into the new folder `dir`.
+    // ponytail: the copy blocks the loop; move it to the worker, with a way to cancel, if exports get big.
+    pub(super) fn export_command(&mut self, dir: &str) {
+        let Some(cache) = self.cache.clone() else {
+            return self.say("there is no cache to export from");
+        };
+        match cache.export_to(Path::new(dir)) {
+            Ok(files) => {
+                let noun = if files == 1 { "file" } else { "files" };
+                self.say(&format!("exported {files} {noun} to {dir}"));
+            }
+            Err(error) => self.say(&format!("cannot export: {error}")),
         }
     }
 
@@ -121,7 +137,11 @@ impl App {
     /// `decompile options: mode=reliable namestyle=ghidra` while any is set, for the status line.
     pub fn options_note(&self) -> Option<String> {
         let options = self.options();
-        let cache = if self.cache { " (cache not used)" } else { "" };
+        let cache = if self.cache.is_some() {
+            " (cache not used)"
+        } else {
+            ""
+        };
         (!options.is_default()).then(|| format!("decompile options: {options}{cache}"))
     }
 

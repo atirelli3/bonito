@@ -1,5 +1,6 @@
 //! The application state, its workers and the event loop.
 
+use crate::cache::Cache;
 use crate::jumps::{Jumps, Spot};
 use crate::keymap::{self, Action, Keymap, Motion, View};
 use crate::kuna::{self, Function, Reference, Reply};
@@ -182,8 +183,8 @@ pub struct App {
     requests: Sender<Request>,
     /// The options a decompile runs with, shared with the worker.
     shared: Arc<Shared>,
-    /// Whether there is a cache for the binary.
-    cache: bool,
+    /// The cache of the binary, if there is one.
+    cache: Option<Arc<Cache>>,
     /// The height of the panes' text, as drawn last.
     rows: usize,
     running: bool,
@@ -203,7 +204,7 @@ impl App {
             functions: Functions::Loading,
             reference: Knowledge::Loading,
             export: Export::Idle,
-            cache: false,
+            cache: None,
             shared: Arc::default(),
             status: None,
             message: None,
@@ -223,8 +224,8 @@ impl App {
     }
 
     /// Records that there is a cache for the binary.
-    pub fn use_cache(&mut self) {
-        self.cache = true;
+    pub fn use_cache(&mut self, cache: Arc<Cache>) {
+        self.cache = Some(cache);
     }
 
     /// Takes the height of the panes' text; the cursors stay in view.
@@ -708,7 +709,7 @@ impl App {
     }
 
     /// Runs a `:` command: `q` `q!` `quit`, `e NAME|0xADDR` (`edit`), `crypto` `blobs` `catalog` `modes`,
-    /// `docs [TOPIC]`, `set` `set!` `mode` and `mode!`.
+    /// `docs [TOPIC]`, `export DIR`, `set` `set!` `mode` and `mode!`.
     fn command(&mut self, line: &str) {
         let line = line.trim();
         let (name, argument) = line
@@ -734,6 +735,8 @@ impl App {
             ("catalog", "") => self.open_reference(View::Catalog),
             ("modes", "") => self.open_reference(View::Modes),
             ("docs", topic) => self.open_docs(topic),
+            ("export", "") => self.message = Some("usage: :export DIR".to_string()),
+            ("export", dir) => self.export_command(dir),
             ("crypto", "") => self.open_view(View::Crypto),
             ("blobs", "") => self.open_view(View::Blobs),
             ("", _) => {}

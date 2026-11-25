@@ -100,8 +100,8 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     let mut app = App::new(binary.clone(), version, warning, requests);
     let shared = app.shared();
     let exporting = cache.clone();
-    if exporting.is_some() {
-        app.use_cache();
+    if let Some(cache) = &exporting {
+        app.use_cache(Arc::clone(cache));
     }
     let worker = worker::spawn_with(Arc::clone(&kuna), binary, shared, cache, queue, tx.clone())?;
     let mut _stop = Stop {
