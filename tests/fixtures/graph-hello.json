@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 4,
+  "binary": {
+    "name": "hello.elf",
+    "label": "",
+    "analysisImageBase": 2097152,
+    "functionCount": 4,
+    "edgeCount": 4
+  },
+  "functions": [
+    {
+      "address": 2101536,
+      "name": "square",
+      "size": 16,
+      "kind": "normal",
+      "parameters": [],
+      "signature": null,
+      "assembly": null,
+      "codeC": null,
+      "error": null,
+      "hasIndirectCalls": false,
+      "forwardsTo": null,
+      "isEntryPoint": false
+    },
+    {
+      "address": 2101552,
+      "name": "add",
+      "size": 16,
+      "kind": "normal",
+      "parameters": [],
+      "signature": null,
+      "assembly": null,
+      "codeC": null,
+      "error": null,
+      "hasIndirectCalls": false,
+      "forwardsTo": null,
+      "isEntryPoint": false
+    },
+    {
+      "address": 2101568,
+      "name": "main",
+      "size": 32,
+      "kind": "normal",
+      "parameters": [],
+      "signature": "void main(void)",
+      "assembly": "00201140  PUSH RAX\n00201141  MOV EDI,0x3\n00201146  CALL 0x201120\n0020114b  MOV EDI,EAX\n0020114d  MOV ESI,0x4\n00201152  POP RAX\n00201153  JMP 0x201130\n00201158  NOP dword ptr [RAX + RAX*0x1]",
+      "codeC": "void main(void)\n{\n  add(square(3),4); // tail-call\n}",
+      "error": null,
+      "hasIndirectCalls": false,
+      "forwardsTo": null,
+      "isEntryPoint": false
+    },
+    {
+      "address": 2101600,
+      "name": "_start",
+      "size": 34,
+      "kind": "normal",
+      "parameters": [],
+      "signature": null,
+      "assembly": null,
+      "codeC": null,
+      "error": null,
+      "hasIndirectCalls": false,
+      "forwardsTo": null,
+      "isEntryPoint": true
+    }
+  ],
+  "edges": [
+    {
+      "callerAddress": 2101568,
+      "calleeAddress": 2101536,
+      "kind": "call",
+      "calleeOrder": 0
+    },
+    {
+      "callerAddress": 2101568,
+      "calleeAddress": 2101552,
+      "kind": "jump",
+      "calleeOrder": 1
+    },
+    {
+      "callerAddress": 2101600,
+      "calleeAddress": 2101536,
+      "kind": "call",
+      "calleeOrder": 0
+    },
+    {
+      "callerAddress": 2101600,
+      "calleeAddress": 2101552,
+      "kind": "call",
+      "calleeOrder": 1
+    }
+  ]
+}

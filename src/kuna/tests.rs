@@ -563,8 +563,19 @@ fn the_binary_argument_is_absolute_so_it_is_never_read_as_a_flag() {
     assert!(Path::new(&args[1]).is_absolute(), "{args:?}");
     assert_eq!(
         args.last().map(|arg| arg.as_os_str()),
-        Some(OsStr::new("--json"))
+        Some(OsStr::new("addr"))
     );
+}
+
+#[test]
+fn the_real_graph_of_hello_has_four_functions_and_four_edges() {
+    let kuna = real_kuna();
+    let reply = kuna.graph(&fixture("hello.elf"), 0x201140).expect("loads");
+    assert_eq!(reply.notes, None);
+    let graph = reply.data;
+    let names: Vec<&str> = graph.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["square", "add", "main", "_start"]);
+    assert_eq!(graph.edges.len(), 4);
 }
 
 #[test]

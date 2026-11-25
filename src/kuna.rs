@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io, thread};
 
+mod graph;
 mod json;
 mod reference;
 mod scratch;
@@ -367,13 +368,24 @@ impl Kuna {
         binary: &Path,
         extra: &[&str],
     ) -> Result<Reply<T>, Error> {
-        let args = query_args(subcommand, binary, extra)?;
-        let limits = Limits::new(&self.stop, self.scratch.path());
-        let output = run(&self.path, args, &limits)?;
+        let mut args = query_args(subcommand, binary, extra)?;
+        args.push(OsString::from("--json"));
+        self.exec(args)
+    }
+
+    /// Runs kuna with `args` and parses what it prints.
+    fn exec<T: DeserializeOwned>(&self, args: Vec<OsString>) -> Result<Reply<T>, Error> {
+        let output = self.output(args)?;
         Ok(Reply {
             data: parse(&output.stdout)?,
             notes: output.notes,
         })
+    }
+
+    /// Runs kuna with `args` under the session's limits.
+    fn output(&self, args: Vec<OsString>) -> Result<Output, Error> {
+        let limits = Limits::new(&self.stop, self.scratch.path());
+        run(&self.path, args, &limits)
     }
 
     /// A message for the status line when kuna is not the version bonito was tested with.
@@ -451,7 +463,6 @@ fn query_args(subcommand: &str, binary: &Path, extra: &[&str]) -> Result<Vec<OsS
     Ok([OsString::from(subcommand), binary.into_os_string()]
         .into_iter()
         .chain(extra.iter().map(|arg| OsString::from(*arg)))
-        .chain([OsString::from("--json")])
         .collect())
 }
 
