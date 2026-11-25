@@ -36,8 +36,8 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
 ## Layout
 | Path | What |
 |---|---|
-| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `jumps.rs` the pure jumplist; `kuna.rs` (+ `kuna/json.rs`, `scratch.rs`, `text.rs`, `tests.rs`) the kuna driver |
-| `tests/` | `smoke.rs` drives the built binary through every path that ends before the terminal is taken over; `fixtures/` = `hello.elf` (+ `hello.c`) and recorded kuna JSON |
+| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `jumps.rs` the pure jumplist; `kuna.rs` (+ `kuna/json.rs`, `scratch.rs`, `text.rs`, `tests.rs`) the kuna driver; `kuna/reference.rs` the catalog, modes and docs; `options.rs` the options a decompile runs with (`Options`, `Shared`); `worker/reference.rs` their views and the thread that loads them; `app/options.rs` the `:set` `:mode` `:catalog` `:docs` commands |
+| `tests/` | `smoke.rs` drives the built binary through every path that ends before the terminal is taken over; `fixtures/` = `hello.elf` (+ `hello.c`), `data.elf` (+ `data.c`: a string, a crypto constant, a gzip blob) and recorded kuna JSON |
 | `kuna-version` | the tested kuna version (line 1) + a sha256 per platform |
 | `scripts/gate.sh` | push gate = CI `gate` job: fetches kuna, then fmt, clippy, tests + coverage ≥ 80% |
 | `scripts/kuna.sh` | fetch the pinned kuna into `target/kuna/`, verified against `kuna-version` |
@@ -80,3 +80,5 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 3. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
 4. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
 5. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
+
+6. By hand on a pty (only `TestBackend` and real-kuna tests so far): `gr gh gp gs gi`, `:set namestyle ghidra`, `:catalog`, `:docs`.
