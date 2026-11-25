@@ -1,10 +1,11 @@
 //! The kuna worker: lists the functions, then answers the requests for views.
 
 use crate::app::{Msg, Request};
+use crate::cache::Cache;
 use crate::keymap::View;
 use crate::kuna::{
-    self, Blobs, Crypto, Decompiled, Disassembly, Hexdump, Kuna, Located, Op, Pcode, Reply,
-    Strings, Summary, Varnode, Xrefs,
+    self, Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Kuna, Located, Op, Pcode,
+    Reply, Strings, Summary, Varnode, Xrefs,
 };
 use crate::options::{Options, Shared};
 use std::io;
@@ -46,7 +47,7 @@ pub fn spawn(
     requests: Receiver<Request>,
     tx: Sender<Msg>,
 ) -> io::Result<JoinHandle<()>> {
-    spawn_with(kuna, binary, Arc::default(), requests, tx)
+    spawn_with(kuna, binary, Arc::default(), None, requests, tx)
 }
 
 /// Lists the functions of `binary` on a worker thread, then answers `requests` until every sender is gone or
@@ -58,11 +59,12 @@ pub fn spawn_with(
     kuna: Arc<Kuna>,
     binary: PathBuf,
     shared: Arc<Shared>,
+    cache: Option<Arc<Cache>>,
     requests: Receiver<Request>,
     tx: Sender<Msg>,
 ) -> io::Result<JoinHandle<()>> {
     thread::Builder::new().spawn(move || {
-        let functions = guarded(|| kuna.functions(&binary));
+        let functions = guarded(|| list_functions(&kuna, &binary, cache.as_deref()));
         // ponytail: a closed channel means the loop is gone; nobody is left to tell.
         if tx.send(Msg::Functions(functions)).is_err() {
             return;
@@ -90,6 +92,29 @@ pub fn spawn_with(
             }
         }
     })
+}
+
+/// The functions of `binary`: the stored list if there is one, else kuna's, which is stored unless it is empty or
+/// kuna said something.
+fn list_functions(
+    kuna: &Kuna,
+    binary: &Path,
+    cache: Option<&Cache>,
+) -> Result<Reply<Vec<Function>>, kuna::Error> {
+    if let Some(list) = cache.and_then(Cache::functions) {
+        return Ok(Reply {
+            data: list,
+            notes: None,
+        });
+    }
+    let mut reply = kuna.functions(binary)?;
+    if let (Some(cache), None) = (cache, &reply.notes)
+        && !reply.data.is_empty()
+        && let Err(error) = cache.store_functions(&reply.data)
+    {
+        reply.notes = Some(format!("cannot cache the function list: {error}"));
+    }
+    Ok(reply)
 }
 
 /// `first` and the requests waiting, in order, without those a later request for the same view replaces.

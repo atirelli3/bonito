@@ -1,6 +1,8 @@
 //! Tests of the kuna worker.
 
 use super::*;
+use crate::cache::{Cache, Key};
+use crate::kuna::Scratch;
 use std::sync::mpsc;
 
 fn pinned_kuna() -> Kuna {
@@ -49,6 +51,85 @@ fn the_worker_sends_the_functions_of_a_binary() {
     let names: Vec<&str> = reply.data.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["square", "add", "main", "_start"]);
     assert!(rx.try_recv().is_err(), "nothing was asked for");
+}
+
+fn cache_in(root: &Path) -> Arc<Cache> {
+    let key = Key::of(&hello(), "1.1005").expect("a key");
+    Arc::new(Cache::open_in(root, key).expect("opens"))
+}
+
+/// The function list a worker run with `cache` sends first.
+fn first_list(cache: &Arc<Cache>) -> Reply<Vec<kuna::Function>> {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    drop(requests);
+    let kuna = Arc::new(pinned_kuna());
+    spawn_with(
+        kuna,
+        hello(),
+        Arc::default(),
+        Some(Arc::clone(cache)),
+        queue,
+        tx,
+    )
+    .expect("spawns")
+    .join()
+    .expect("finishes");
+    let Msg::Functions(Ok(reply)) = rx.recv().expect("an answer") else {
+        panic!("expected the function list");
+    };
+    reply
+}
+
+/// The names in the function list a worker run with `cache` sends first.
+fn listed_with(cache: &Arc<Cache>) -> Vec<String> {
+    let reply = first_list(cache);
+    let names = reply.data.iter().map(|f| f.name.as_str().to_string());
+    names.collect()
+}
+
+#[test]
+fn a_list_that_cannot_be_stored_is_said_and_still_shown() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    cache.store_functions(&[hello_function()]).expect("stores");
+    let file = std::fs::read_dir(scratch.path())
+        .expect("lists")
+        .map(|entry| entry.expect("an entry").path())
+        .find(|path| path.to_string_lossy().ends_with(".functions.json"))
+        .expect("the stored list");
+    std::fs::remove_file(&file).expect("removes");
+    std::fs::create_dir(&file).expect("a folder where the list goes");
+    let reply = first_list(&cache);
+    let note = reply.notes.expect("a note");
+    assert!(note.contains("cannot cache the function list"), "{note}");
+    assert_eq!(reply.data.len(), 4, "kuna's list is still shown");
+}
+
+fn hello_function() -> kuna::Function {
+    let text = r#"{"name":"square","address":2101536,"size":16}"#;
+    serde_json::from_str(text).expect("a function")
+}
+
+#[test]
+fn a_stored_function_list_is_served_without_asking_kuna() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    let fake = r#"{"name":"cached_only","address":16,"size":4}"#;
+    let fake: kuna::Function = serde_json::from_str(fake).expect("a function");
+    cache.store_functions(&[fake]).expect("stores");
+    assert_eq!(listed_with(&cache), ["cached_only"]);
+}
+
+#[test]
+fn the_function_list_kuna_gave_is_stored_for_the_next_open() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    assert!(cache.functions().is_none());
+    assert_eq!(listed_with(&cache), ["square", "add", "main", "_start"]);
+    let stored = cache.functions().expect("stored");
+    let names: Vec<&str> = stored.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["square", "add", "main", "_start"]);
 }
 
 #[test]
@@ -598,6 +679,7 @@ fn toggling_an_option_changes_what_the_worker_decompiles_and_says_which_generati
         Arc::new(pinned_kuna()),
         hello(),
         Arc::clone(&shared),
+        None,
         queue,
         tx,
     )

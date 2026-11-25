@@ -2,17 +2,25 @@
 // ponytail: #85 and the tasks after it read these; remove this `allow` when the last of them does.
 #![allow(dead_code)]
 
+use crate::kuna::Function;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{self, Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
-use std::{env, fs, io};
+use std::{env, fs, io, process};
 
 /// The file in an entry that says which binary it was made for.
 const KEY_FILE: &str = "key.json";
 /// How many bytes `key.json` may have: a longer one is not ours, and none is written.
 const KEY_LIMIT: u64 = 64 * 1024;
+/// How many bytes the stored function list may have: a longer one is not ours, and none is written.
+const FUNCTIONS_LIMIT: u64 = 64 * 1024 * 1024;
+/// How many functions a stored list may have, and how many aliases one of them.
+const MAX_FUNCTIONS: usize = 1_000_000;
+const MAX_ALIASES: usize = 64;
+/// The layout of the stored list; a list in another one is a miss.
+const FORMAT: u32 = 1;
 /// How many characters of the binary's file name an entry name keeps.
 const NAME_LIMIT: usize = 40;
 /// Said when no cache directory can be found.
@@ -23,7 +31,8 @@ const NO_ROOT: &str = if cfg!(windows) {
 };
 
 /// What a cached answer is valid for: the binary as it was and the kuna that read it.
-// ponytail: size and mtime do not tell a same-size replacement that kept its mtime; a content hash would.
+// ponytail: size and mtime do not tell a same-size replacement that kept its mtime; a content hash would. A kuna
+// build with the same version string is not told apart either.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Key {
     pub binary: String,
@@ -35,17 +44,16 @@ pub struct Key {
 impl Key {
     /// The key of `binary` as it is on disk now, for kuna `kuna_version`; an error names the path.
     pub fn of(binary: &Path, kuna_version: &str) -> io::Result<Self> {
-        let named = |error: io::Error| io::Error::new(error.kind(), format!("{binary:?}: {error}"));
-        let absolute = path::absolute(binary).map_err(named)?;
+        let absolute = path::absolute(binary).map_err(|error| at(binary, error))?;
         let text = absolute
             .to_str()
-            .ok_or_else(|| named(io::Error::other("not valid UTF-8")))?;
-        let meta = fs::metadata(&absolute).map_err(named)?;
+            .ok_or_else(|| at(binary, io::Error::other("not valid UTF-8")))?;
+        let meta = fs::metadata(&absolute).map_err(|error| at(binary, error))?;
         let mtime = meta
             .modified()
-            .map_err(named)?
+            .map_err(|error| at(binary, error))?
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| named(io::Error::other("modified before 1970")))?;
+            .map_err(|_| at(binary, io::Error::other("modified before 1970")))?;
         Ok(Self {
             binary: text.to_string(),
             size: meta.len(),
@@ -75,24 +83,17 @@ impl Cache {
     }
 
     /// The cache for `key` under `root`, which is made if it is not there.
-    fn open_in(root: &Path, key: Key) -> io::Result<Self> {
+    pub(crate) fn open_in(root: &Path, key: Key) -> io::Result<Self> {
         make_private(root)?;
         let hash = fnv1a(key_json(&key)?.as_bytes());
         let entry = root.join(format!("{}-{hash:016x}", clean_name(&key.binary)));
         Ok(Self { entry, key })
     }
 
-    /// The entry, if it is finished and was made for this key: a `key.json` that is a regular file, no longer than
-    /// the limit, with this key in it.
+    /// The entry, if it is finished and was made for this key.
     pub fn complete(&self) -> Option<&Path> {
-        let path = self.entry.join(KEY_FILE);
-        fs::symlink_metadata(&path).ok()?.is_file().then_some(())?;
-        let mut text = String::new();
-        let file = fs::File::open(&path).ok()?;
-        file.take(KEY_LIMIT + 1).read_to_string(&mut text).ok()?;
-        let found: Key = serde_json::from_str(&text)
-            .ok()
-            .filter(|_| text.len() as u64 <= KEY_LIMIT)?;
+        let text = read_capped(&self.entry.join(KEY_FILE), KEY_LIMIT)?;
+        let found: Key = serde_json::from_str(&text).ok()?;
         (found == self.key).then_some(self.entry.as_path())
     }
 
@@ -105,6 +106,104 @@ impl Cache {
         }
         fs::write(dir.join(KEY_FILE), json)
     }
+
+    /// The file of the function list, next to the entry.
+    fn functions_file(&self) -> PathBuf {
+        let mut name = self.entry.clone().into_os_string();
+        name.push(".functions.json");
+        PathBuf::from(name)
+    }
+
+    /// The function list stored for this key; none when it is missing, unreadable, empty or from another layout.
+    pub fn functions(&self) -> Option<Vec<Function>> {
+        let text = read_capped(&self.functions_file(), FUNCTIONS_LIMIT)?;
+        let stored: Stored = serde_json::from_str(&text).ok()?;
+        let fits =
+            stored.format == FORMAT && stored.key == self.key && !stored.functions.is_empty();
+        (fits && !too_big(&stored.functions)).then_some(stored.functions)
+    }
+
+    /// Stores `functions` for this key: written to a file of its own, then renamed over the last list.
+    pub fn store_functions(&self, functions: &[Function]) -> io::Result<()> {
+        if too_big(functions) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the function list is too big to cache",
+            ));
+        }
+        let stored = StoredRef {
+            format: FORMAT,
+            key: &self.key,
+            functions,
+        };
+        let text = serde_json::to_string(&stored).map_err(io::Error::other)?;
+        if text.len() as u64 > FUNCTIONS_LIMIT {
+            let message = format!("the function list would be longer than {FUNCTIONS_LIMIT} bytes");
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, message));
+        }
+        let target = self.functions_file();
+        let mut temp = target.clone().into_os_string();
+        temp.push(format!(".tmp-{}", process::id()));
+        let temp = PathBuf::from(temp);
+        // A temporary file that cannot be created is not ours to remove; one that was is removed on any failure.
+        let mut file = open_new(&temp).map_err(|error| at(&temp, error))?;
+        let written = file.write_all(text.as_bytes());
+        drop(file);
+        let published = written
+            .map_err(|error| at(&temp, error))
+            .and_then(|()| fs::rename(&temp, &target).map_err(|error| at(&target, error)));
+        if published.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        published
+    }
+}
+
+/// A function list and the key it was made for, as it is written.
+#[derive(Serialize)]
+struct StoredRef<'a> {
+    format: u32,
+    key: &'a Key,
+    functions: &'a [Function],
+}
+
+/// A function list and the key it was made for, as it is read.
+#[derive(Deserialize)]
+struct Stored {
+    format: u32,
+    key: Key,
+    functions: Vec<Function>,
+}
+
+/// Whether `functions` is longer than a stored list may be, or one of them has too many aliases.
+fn too_big(functions: &[Function]) -> bool {
+    functions.len() > MAX_FUNCTIONS || functions.iter().any(|f| f.aliases.len() > MAX_ALIASES)
+}
+
+/// `error` said to be about `path`.
+fn at(path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{path:?}: {error}"))
+}
+
+/// The text of the regular file at `path` (a link is not one), if it is at most `limit` bytes.
+fn read_capped(path: &Path, limit: u64) -> Option<String> {
+    fs::symlink_metadata(path).ok()?.is_file().then_some(())?;
+    let mut text = String::new();
+    let file = fs::File::open(path).ok()?;
+    file.take(limit + 1).read_to_string(&mut text).ok()?;
+    (text.len() as u64 <= limit).then_some(text)
+}
+
+/// Opens a file that must not exist yet, to write; on Unix only its owner can read it.
+fn open_new(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// The user's cache directory for bonito; only an absolute path counts, so a relative `XDG_CACHE_HOME` is ignored.
@@ -163,22 +262,21 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// Makes `dir` and its parents. On Unix `dir` must be a directory (not a link) only its owner can enter; one that
 /// already exists with other rights is refused. On Windows it takes the ACL of `%LOCALAPPDATA%`.
 fn make_private(dir: &Path) -> io::Result<()> {
-    let named = |error: io::Error| io::Error::new(error.kind(), format!("{dir:?}: {error}"));
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         builder.mode(0o700);
-        builder.create(dir).map_err(named)?;
-        let meta = fs::symlink_metadata(dir).map_err(named)?;
+        builder.create(dir).map_err(|error| at(dir, error))?;
+        let meta = fs::symlink_metadata(dir).map_err(|error| at(dir, error))?;
         if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
-            return Err(named(io::Error::other("not a private directory")));
+            return Err(at(dir, io::Error::other("not a private directory")));
         }
         Ok(())
     }
     #[cfg(not(unix))]
-    builder.create(dir).map_err(named)
+    builder.create(dir).map_err(|error| at(dir, error))
 }
 
 #[cfg(test)]
@@ -407,5 +505,146 @@ mod tests {
         let link = scratch.path().join("link");
         std::os::unix::fs::symlink(&real, &link).expect("links");
         assert!(Cache::open_in(&link, key("/a/hello.elf")).is_err());
+    }
+
+    fn function(name: &str, address: u64) -> Function {
+        let text = format!(
+            r#"{{"name":{name:?},"address":{address},"size":16,"aliases":["sub_{address:x}"]}}"#
+        );
+        serde_json::from_str(&text).expect("a function")
+    }
+
+    fn open(scratch: &Scratch, binary: &str) -> Cache {
+        Cache::open_in(scratch.path(), key(binary)).expect("opens")
+    }
+
+    #[test]
+    fn the_function_list_comes_back_as_it_was_stored_and_leaves_one_file() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        assert!(cache.functions().is_none(), "nothing stored yet");
+        let list = [function("main", 0x10), function("add", 0x20)];
+        cache.store_functions(&list).expect("stores");
+        let back = cache.functions().expect("a list");
+        let names: Vec<&str> = back.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["main", "add"]);
+        assert_eq!((back[1].address, back[1].size), (0x20, 16));
+        assert_eq!(back[0].aliases[0].as_str(), "sub_10");
+        let files: Vec<_> = fs::read_dir(scratch.path()).expect("lists").collect();
+        assert_eq!(files.len(), 1, "no temporary file is left behind");
+        cache.store_functions(&list[..1]).expect("stores again");
+        assert_eq!(cache.functions().map(|list| list.len()), Some(1));
+    }
+
+    #[test]
+    fn a_list_stored_for_another_key_is_not_served() {
+        let scratch = Scratch::new().expect("a directory");
+        let (ours, other) = (
+            open(&scratch, "/a/hello.elf"),
+            open(&scratch, "/a/other.elf"),
+        );
+        other
+            .store_functions(&[function("main", 0x10)])
+            .expect("stores");
+        fs::copy(other.functions_file(), ours.functions_file()).expect("copies");
+        assert!(ours.functions().is_none());
+        assert!(other.functions().is_some());
+    }
+
+    #[test]
+    fn a_list_that_is_unreadable_or_longer_than_the_limit_is_a_miss() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        fs::write(cache.functions_file(), "not json").expect("writes");
+        assert!(cache.functions().is_none());
+        cache
+            .store_functions(&[function("main", 0x10)])
+            .expect("stores");
+        let mut text = fs::read_to_string(cache.functions_file()).expect("reads");
+        assert!(cache.functions().is_some());
+        text.push_str(&" ".repeat(FUNCTIONS_LIMIT as usize + 1 - text.len()));
+        fs::write(cache.functions_file(), text).expect("writes");
+        assert!(cache.functions().is_none(), "valid JSON, one byte too long");
+    }
+
+    #[test]
+    fn an_empty_list_is_never_served() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        cache.store_functions(&[]).expect("stores");
+        assert!(cache.functions().is_none());
+    }
+
+    #[test]
+    fn a_list_in_another_format_is_a_miss() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        cache
+            .store_functions(&[function("main", 0x10)])
+            .expect("stores");
+        let text = fs::read_to_string(cache.functions_file()).expect("reads");
+        let old = text.replace(&format!("\"format\":{FORMAT}"), "\"format\":0");
+        assert_ne!(old, text, "the format is written");
+        fs::write(cache.functions_file(), old).expect("writes");
+        assert!(cache.functions().is_none());
+    }
+
+    #[test]
+    fn a_list_with_too_many_aliases_or_functions_is_refused() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        let aliases: Vec<String> = (0..=MAX_ALIASES).map(|at| format!("\"a{at}\"")).collect();
+        let text = format!(
+            r#"{{"name":"f","address":1,"size":1,"aliases":[{}]}}"#,
+            aliases.join(",")
+        );
+        let many: Function = serde_json::from_str(&text).expect("a function");
+        let error = cache
+            .store_functions(&[many])
+            .expect_err("too many aliases");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        let one = r#"{"name":"f","address":1,"size":1}"#;
+        let text = format!("[{}]", vec![one; MAX_FUNCTIONS + 1].join(","));
+        let list: Vec<Function> = serde_json::from_str(&text).expect("a long list");
+        assert!(cache.store_functions(&list).is_err(), "too many functions");
+    }
+
+    #[test]
+    fn a_store_that_cannot_publish_leaves_no_temporary_file() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        fs::create_dir(cache.functions_file()).expect("a folder where the list goes");
+        let error = cache.store_functions(&[function("main", 0x10)]);
+        assert!(error.is_err());
+        let names: Vec<_> = fs::read_dir(scratch.path()).expect("lists").collect();
+        assert_eq!(names.len(), 1, "only the folder is left");
+    }
+
+    #[test]
+    fn a_stored_name_is_cleaned_again_when_it_is_read() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        let key = key_json(&cache.key).expect("json");
+        let text = format!(
+            r#"{{"format":{FORMAT},"key":{key},"functions":[{{"name":"ev\u001b[2Jil\u202e","address":1,"size":1,"aliases":["a\u001bb"]}}]}}"#
+        );
+        fs::write(cache.functions_file(), text).expect("writes");
+        let back = cache.functions().expect("a list");
+        assert!(!back[0].name.contains(['\u{1b}', '\u{202e}']));
+        assert!(!back[0].aliases[0].contains('\u{1b}'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_list_that_is_a_symlink_is_not_trusted() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        cache
+            .store_functions(&[function("main", 0x10)])
+            .expect("stores");
+        let real = scratch.path().join("real.json");
+        fs::rename(cache.functions_file(), &real).expect("moves");
+        std::os::unix::fs::symlink(&real, cache.functions_file()).expect("links");
+        assert!(cache.functions().is_none());
     }
 }

@@ -4,11 +4,11 @@
 #![allow(dead_code)]
 
 use super::text::{Code, Text};
-use serde::Deserialize;
 use serde::de::IgnoredAny;
+use serde::{Deserialize, Serialize};
 
 /// One function kuna found in the binary.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Function {
     /// A symbol name, or kuna's generated `sub_<addr>`.
     pub name: Text,

@@ -13,6 +13,7 @@ mod worker;
 
 use app::App;
 use args::Command;
+use cache::Cache;
 use kuna::Kuna;
 use std::error::Error;
 use std::io::{self, IsTerminal, Write};
@@ -77,10 +78,22 @@ fn open(binary: PathBuf, explicit_kuna: Option<PathBuf>) -> Result<(), Box<dyn E
     require_terminal()?;
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    let (version, warning) = (kuna.version().to_string(), kuna.version_warning());
+    let (cache, cache_warning) = match Cache::open(&binary, kuna.version()) {
+        Ok(cache) => (Some(Arc::new(cache)), None),
+        Err(error) => (None, Some(format!("no cache: {error}"))),
+    };
+    let version = kuna.version().to_string();
+    let warnings = [kuna.version_warning(), cache_warning];
+    let warning = warnings
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let warning = (!warning.is_empty()).then_some(warning);
     // ponytail: the app owns the options a decompile runs with and the worker reads the app's, so they cannot differ.
     let mut app = App::new(binary.clone(), version, warning, requests);
-    let worker = worker::spawn_with(Arc::clone(&kuna), binary, app.shared(), queue, tx.clone())?;
+    let shared = app.shared();
+    let worker = worker::spawn_with(Arc::clone(&kuna), binary, shared, cache, queue, tx.clone())?;
     let mut _stop = Stop {
         kuna: Arc::clone(&kuna),
         worker: Some(worker),

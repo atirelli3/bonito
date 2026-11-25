@@ -1,7 +1,7 @@
 //! Text from kuna that traces back to a hostile binary, cleaned as it is parsed so nothing downstream can
 //! print it as a terminal escape.
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ops::Deref;
 
 /// The most characters a name or message keeps.
@@ -57,6 +57,12 @@ impl Deref for Text {
 impl PartialEq<&str> for Text {
     fn eq(&self, other: &&str) -> bool {
         self.0 == *other
+    }
+}
+
+impl Serialize for Text {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
     }
 }
 
