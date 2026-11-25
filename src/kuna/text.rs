@@ -85,9 +85,11 @@ impl Deref for Code {
     }
 }
 
-/// `text` with every unsafe character but newline and tab replaced by a space.
+/// `text` with every unsafe character but newline and tab replaced by a space; a CRLF (kuna prints one on Windows)
+/// is a newline, a lone CR is unsafe.
 pub fn multiline(text: &str) -> String {
-    text.chars()
+    text.replace("\r\n", "\n")
+        .chars()
         .map(|c| {
             if is_unsafe(c) && c != '\n' && c != '\t' {
                 ' '
@@ -108,6 +110,14 @@ impl<'de> Deserialize<'de> for Code {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiline_keeps_lines_and_tabs_reads_crlf_as_a_newline_and_cleans_the_rest() {
+        assert_eq!(
+            multiline("a\r\nb\rc\td\u{1b}[2Je\u{202e}"),
+            "a\nb c\td [2Je "
+        );
+    }
 
     #[test]
     fn single_line_replaces_controls_and_bidi_overrides_with_spaces() {

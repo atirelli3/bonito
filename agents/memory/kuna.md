@@ -159,3 +159,6 @@ Verified 2026-11-25 against kuna 1.1005 (recorded subsets in `tests/fixtures/{ca
   would make kuna open a share), and any value starting with `-` (so a negative number cannot be set).
 - [WHY] kuna's stderr is cut to 300 characters (`STDERR_LIMIT`): a progress line before `error: option …` could hide the
   reason. No such line was seen.
+- [WHY] On Windows `kuna docs TOPIC` prints CRLF line endings (found by the Windows CI job; Linux and macOS print LF).
+  `text::multiline` reads a CRLF as a newline and still turns a lone CR into a space, or every doc line ends in a stray
+  space. Only the Windows job can show this: run plain-text kuna output through `multiline`, never `str::lines` alone.
