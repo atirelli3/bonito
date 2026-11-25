@@ -175,3 +175,27 @@ fact the code doesn't say.
   pass `--addr`, so a symbol cannot redirect them); the xrefs `count`, strings `xrefs` flag and the summary `runtime`
   / `limits` are not read; `rows_reply` is not shared with `hex_reply` / `xrefs_reply`; `gd` from a binary-wide view
   does not take the word under the cursor.
+
+## Kuna options (#10: `:set` `:set!` `:mode` `:mode!` `:catalog` `:modes` `:docs`)
+- [USER-YES] (2026-11-25) `:set NAME VALUE` is checked against the catalog (unknown name, value not in `values`: refused
+  with the allowed values; a `<…>` placeholder value accepts any); `:set! NAME VALUE` sends it anyway, so upstream option
+  names that are not catalog rows can be set. `:docs` lists kuna's topics and `:docs TOPIC` opens one.
+- [WHY] The active options apply to `decompile` only; the status line says `decompile options: …` while any is set.
+  `:set` lists, `:set NAME` shows (or the catalog default), `:set NAME&` resets, `:mode [NAME]` shows or sets, `:mode!`
+  skips the list of modes, `:mode auto` clears. `mode` is not an option name (`:mode` sets it).
+- [WHY] What is typed goes to kuna's argv, so the characters are checked first, `:set!` included (`src/options.rs`): name
+  and mode `[A-Za-z0-9_]+`, value `[A-Za-z0-9_.:/+-]+`, not starting with `-`, no `//` start or `://`, at most 100
+  characters, at most 64 options. `Options` is an immutable value with private fields: the only ways to build one validate.
+- [WHY] The app owns the options (`Shared`: options + generation under one lock) and gives the worker its handle, so they
+  cannot differ. The worker reads `(options, generation)` before each request and tags the answer; the app drops a
+  decompile answer of another generation (other views' answers stand). A change drops every cached decompile view and asks
+  again for the one shown, without moving the focus; setting what is already set does nothing.
+- [WHY] kuna's own failures are shown, not hidden: a failed reference load reaches the status line
+  (`Knowledge::Failed`), each call of it is named in the error, and `:set` before it loads says so and points at `:set!`.
+- [KEPT] Left as they are: a decompile reloaded by `:set` comes back with the cursor at the top and the jumplist / marks
+  point at the old output (same rule as an evicted view); after a bad `:set!` value every decompile fails with kuna's
+  message until `:set NAME&`; the reference thread and the worker can run kuna at the same time in one scratch directory
+  (these commands read no files); `Reference` is as large as kuna's answer (cap 64 MiB), a hostile 64 MiB doc peaks at a
+  few times its size before `bounded`; `:docs TOPIC` sends the topic's number and the worker lists the topics again to find
+  its name (they differ only if kuna is replaced mid-session); the `named(...)` call sites of `Kuna::reference` have no test
+  that fails one command (the wrapper is tested); `:set NAME` echoes the checked name only.
