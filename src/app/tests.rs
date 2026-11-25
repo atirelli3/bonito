@@ -1,7 +1,10 @@
 //! Tests for the app state, the loop and the worker.
 use super::*;
+use crate::cache::{Cache, Key};
+use crate::kuna::Scratch;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+use std::path::Path;
 use std::sync::mpsc;
 
 /// An app and the queue its requests for the worker go to.
@@ -665,6 +668,105 @@ fn the_code_pane_cannot_take_the_focus_while_it_shows_nothing() {
     ctrl_w(&mut app, 'l');
     assert_eq!(app.focus, Focus::List);
     assert_eq!(app.message.as_deref(), Some("no code open"));
+}
+
+/// The export note after the app is told `status`.
+fn export_note_after(app: &mut App, status: Export) -> Option<String> {
+    app.update(Msg::Export(status)).expect("updates");
+    app.export_note()
+}
+
+#[test]
+fn the_export_progress_reaches_the_status_note() {
+    let mut app = app();
+    assert_eq!(app.export_note(), None);
+    let running = |done, total| Export::Running { done, total };
+    let note = export_note_after(&mut app, running(0, None));
+    assert_eq!(note.as_deref(), Some("exporting…"));
+    let note = export_note_after(&mut app, running(120, Some(3153)));
+    assert_eq!(note.as_deref(), Some("exporting 120/3153 functions"));
+    let ready = Export::Ready {
+        functions: 134,
+        failed: 0,
+    };
+    assert_eq!(
+        export_note_after(&mut app, ready),
+        None,
+        "nothing to say once it is cached"
+    );
+    let some_failed = Export::Ready {
+        functions: 134,
+        failed: 3,
+    };
+    let note = export_note_after(&mut app, some_failed).expect("a note");
+    assert!(note.contains("3 of 134"), "{note}");
+    let note = export_note_after(&mut app, Export::Failed("disk full".to_string()));
+    assert_eq!(note.as_deref(), Some("no cache export: disk full"));
+}
+
+/// A cache of the hello.elf fixture under `scratch`.
+fn test_cache(scratch: &Scratch) -> Arc<Cache> {
+    let hello = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.elf");
+    let key = Key::of(&hello, "1.1005").expect("a key");
+    Arc::new(Cache::open_in(scratch.path(), key).expect("opens"))
+}
+
+#[test]
+fn export_says_why_it_cannot_copy_and_needs_a_folder_name() {
+    let (mut app, _queue) = three();
+    colon(&mut app, "export");
+    let usage = app.message.clone().expect("a message");
+    assert!(usage.contains("usage"), "{usage}");
+    colon(&mut app, "export /tmp/never");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("there is no cache to export from")
+    );
+    let scratch = Scratch::new().expect("a directory");
+    app.use_cache(test_cache(&scratch));
+    let out = scratch.path().join("out");
+    colon(&mut app, &format!("export {}", out.display()));
+    let said = app.message.clone().expect("a message");
+    assert!(said.contains("no finished export"), "{said}");
+    assert!(!out.exists());
+}
+
+#[test]
+fn export_copies_the_finished_export_and_says_how_many_files() {
+    let (mut app, _queue) = three();
+    let scratch = Scratch::new().expect("a directory");
+    let cache = test_cache(&scratch);
+    let partial = cache.partial_dir();
+    std::fs::create_dir(&partial).expect("makes the folder");
+    std::fs::write(partial.join("hello.elf.c"), "int main(void);").expect("writes");
+    std::fs::write(partial.join("index.jsonl"), "{}\n").expect("writes");
+    cache.publish().expect("publishes");
+    app.use_cache(cache);
+    let out = scratch.path().join("out");
+    colon(&mut app, &format!("export {}", out.display()));
+    let said = app.message.clone().expect("a message");
+    assert!(said.starts_with("exported 2 files to "), "{said}");
+    assert!(out.join("hello.elf.c").is_file());
+    colon(&mut app, &format!("export {}", out.display()));
+    let again = app.message.clone().expect("a message");
+    assert!(again.contains("exists"), "{again}");
+}
+
+#[test]
+fn with_a_cache_the_options_note_says_the_cache_is_not_used() {
+    let (mut app, _queue) = three();
+    colon(&mut app, "set! namestyle ghidra");
+    let plain = app.options_note().expect("options are set");
+    assert!(
+        !plain.contains("cache"),
+        "no cache, nothing to say: {plain}"
+    );
+    let scratch = Scratch::new().expect("a directory");
+    app.use_cache(test_cache(&scratch));
+    let note = app.options_note().expect("options are set");
+    assert!(note.contains("(cache not used)"), "{note}");
+    colon(&mut app, "set namestyle&");
+    assert_eq!(app.options_note(), None);
 }
 
 #[test]

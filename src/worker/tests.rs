@@ -1,9 +1,11 @@
 //! Tests of the kuna worker.
 
 use super::*;
+use crate::cache::{Cache, Key};
+use crate::kuna::Scratch;
 use std::sync::mpsc;
 
-fn pinned_kuna() -> Kuna {
+pub(super) fn pinned_kuna() -> Kuna {
     let exe = if cfg!(windows) { "kuna.exe" } else { "kuna" };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target/kuna")
@@ -12,7 +14,7 @@ fn pinned_kuna() -> Kuna {
     kuna::locate(Some(&path), &sample).expect("the pinned kuna (scripts/kuna.sh)")
 }
 
-fn hello() -> PathBuf {
+pub(super) fn hello() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.elf")
 }
 
@@ -49,6 +51,152 @@ fn the_worker_sends_the_functions_of_a_binary() {
     let names: Vec<&str> = reply.data.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["square", "add", "main", "_start"]);
     assert!(rx.try_recv().is_err(), "nothing was asked for");
+}
+
+fn cache_in(root: &Path) -> Arc<Cache> {
+    let key = Key::of(&hello(), "1.1005").expect("a key");
+    Arc::new(Cache::open_in(root, key).expect("opens"))
+}
+
+/// The function list a worker run with `cache` sends first.
+fn first_list(cache: &Arc<Cache>) -> Reply<Vec<kuna::Function>> {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    drop(requests);
+    let kuna = Arc::new(pinned_kuna());
+    spawn_with(
+        kuna,
+        hello(),
+        Arc::default(),
+        Some(Arc::clone(cache)),
+        queue,
+        tx,
+    )
+    .expect("spawns")
+    .join()
+    .expect("finishes");
+    let Msg::Functions(Ok(reply)) = rx.recv().expect("an answer") else {
+        panic!("expected the function list");
+    };
+    reply
+}
+
+/// The names in the function list a worker run with `cache` sends first.
+fn listed_with(cache: &Arc<Cache>) -> Vec<String> {
+    let reply = first_list(cache);
+    let names = reply.data.iter().map(|f| f.name.as_str().to_string());
+    names.collect()
+}
+
+/// The decompile answer of `main` from a worker run with `cache` and `shared`.
+fn main_answer(cache: &Arc<Cache>, shared: Arc<Shared>) -> Reply<Vec<String>> {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn_with(
+        Arc::new(pinned_kuna()),
+        hello(),
+        shared,
+        Some(Arc::clone(cache)),
+        queue,
+        tx,
+    )
+    .expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    requests
+        .send(request(View::Decompile, 0x201140))
+        .expect("sends");
+    let Ok(Msg::Code {
+        answer: Ok(reply), ..
+    }) = rx.recv()
+    else {
+        panic!("expected the decompile of main");
+    };
+    drop(requests);
+    worker.join().expect("finishes");
+    reply
+}
+
+/// A cache of hello.elf in `root` whose export is finished and sits in this session's folder.
+fn exported_cache(root: &Path) -> Arc<Cache> {
+    let cache = cache_in(root);
+    let dir = cache.partial_dir();
+    pinned_kuna().export(&hello(), &dir).expect("exports");
+    cache
+}
+
+#[test]
+fn a_function_the_export_has_is_served_from_it_and_says_so() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = exported_cache(scratch.path());
+    let reply = main_answer(&cache, Arc::default());
+    assert_eq!(reply.data[0], "void main(void)", "the export's text");
+    let note = reply.notes.expect("a note");
+    assert!(note.contains("whole-binary cache"), "{note}");
+}
+
+#[test]
+fn with_options_set_the_cache_is_not_used() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = exported_cache(scratch.path());
+    let shared = Arc::new(Shared::default());
+    let options = shared.options().with_option("namestyle", "ghidra");
+    shared.replace(options.expect("a valid option"));
+    let reply = main_answer(&cache, shared);
+    assert_eq!(reply.data[0], "int main(void)", "kuna's per-call text");
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn with_no_export_yet_a_function_is_decompiled_per_call() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    let reply = main_answer(&cache, Arc::default());
+    assert_eq!(reply.data[0], "int main(void)");
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn a_list_that_cannot_be_stored_is_said_and_still_shown() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    cache.store_functions(&[hello_function()]).expect("stores");
+    let file = std::fs::read_dir(scratch.path())
+        .expect("lists")
+        .map(|entry| entry.expect("an entry").path())
+        .find(|path| path.to_string_lossy().ends_with(".functions.json"))
+        .expect("the stored list");
+    std::fs::remove_file(&file).expect("removes");
+    std::fs::create_dir(&file).expect("a folder where the list goes");
+    let reply = first_list(&cache);
+    let note = reply.notes.expect("a note");
+    assert!(note.contains("cannot cache the function list"), "{note}");
+    assert_eq!(reply.data.len(), 4, "kuna's list is still shown");
+}
+
+fn hello_function() -> kuna::Function {
+    let text = r#"{"name":"square","address":2101536,"size":16}"#;
+    serde_json::from_str(text).expect("a function")
+}
+
+#[test]
+fn a_stored_function_list_is_served_without_asking_kuna() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    let fake = r#"{"name":"cached_only","address":16,"size":4}"#;
+    let fake: kuna::Function = serde_json::from_str(fake).expect("a function");
+    cache.store_functions(&[fake]).expect("stores");
+    assert_eq!(listed_with(&cache), ["cached_only"]);
+}
+
+#[test]
+fn the_function_list_kuna_gave_is_stored_for_the_next_open() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    assert!(cache.functions().is_none());
+    assert_eq!(listed_with(&cache), ["square", "add", "main", "_start"]);
+    let stored = cache.functions().expect("stored");
+    let names: Vec<&str> = stored.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["square", "add", "main", "_start"]);
 }
 
 #[test]
@@ -598,6 +746,7 @@ fn toggling_an_option_changes_what_the_worker_decompiles_and_says_which_generati
         Arc::new(pinned_kuna()),
         hello(),
         Arc::clone(&shared),
+        None,
         queue,
         tx,
     )

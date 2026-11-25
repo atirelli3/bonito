@@ -12,6 +12,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io, thread};
 
+mod export;
 mod graph;
 mod json;
 mod reference;
@@ -19,15 +20,16 @@ mod scratch;
 mod text;
 
 use crate::options::Options;
-use scratch::Scratch;
+pub use scratch::Scratch;
 
+pub use export::{Exported, Progress};
 pub use graph::{Graph, Node};
 pub use json::{
     Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Located, Op, Pcode, Strings,
     Summary, Varnode, Xrefs,
 };
 pub use reference::{CatalogRow, Mode, Reference, Topic};
-pub use text::{Text, is_unsafe, single_line};
+pub use text::{Text, is_unsafe, multiline, single_line};
 
 /// The kuna binary's file name on this platform.
 const KUNA_EXE: &str = if cfg!(windows) { "kuna.exe" } else { "kuna" };
@@ -385,7 +387,15 @@ impl Kuna {
 
     /// Runs kuna with `args` under the session's limits.
     fn output(&self, args: Vec<OsString>) -> Result<Output, Error> {
-        let limits = Limits::new(&self.stop, self.scratch.path());
+        self.output_for(args, KUNA_TIMEOUT)
+    }
+
+    /// Runs kuna with `args`, killing it after `timeout`.
+    fn output_for(&self, args: Vec<OsString>, timeout: Duration) -> Result<Output, Error> {
+        let limits = Limits {
+            timeout,
+            ..Limits::new(&self.stop, self.scratch.path())
+        };
         run(&self.path, args, &limits)
     }
 

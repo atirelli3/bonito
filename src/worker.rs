@@ -1,10 +1,11 @@
 //! The kuna worker: lists the functions, then answers the requests for views.
 
 use crate::app::{Msg, Request};
+use crate::cache::{Cache, Served};
 use crate::keymap::View;
 use crate::kuna::{
-    self, Blobs, Crypto, Decompiled, Disassembly, Hexdump, Kuna, Located, Op, Pcode, Reply,
-    Strings, Summary, Varnode, Xrefs,
+    self, Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Kuna, Located, Op, Pcode,
+    Reply, Strings, Summary, Varnode, Xrefs,
 };
 use crate::options::{Options, Shared};
 use std::io;
@@ -38,6 +39,16 @@ const PANIC_LIMIT: usize = 200;
 /// How often an idle worker checks whether kuna was cancelled.
 const IDLE: Duration = Duration::from_millis(100);
 
+/// What the worker keeps between requests: the call graph, and how far the export's index has been read.
+#[derive(Default)]
+struct Kept {
+    graph: Option<kuna::Graph>,
+    served: Served,
+}
+
+/// Said with a function's C text that came from the whole-binary export.
+const FROM_CACHE: &str = "from the whole-binary cache: types can differ from a single decompile";
+
 /// `spawn_with` and no options: a worker for the tests.
 #[cfg(test)]
 pub fn spawn(
@@ -46,28 +57,29 @@ pub fn spawn(
     requests: Receiver<Request>,
     tx: Sender<Msg>,
 ) -> io::Result<JoinHandle<()>> {
-    spawn_with(kuna, binary, Arc::default(), requests, tx)
+    spawn_with(kuna, binary, Arc::default(), None, requests, tx)
 }
 
 /// Lists the functions of `binary` on a worker thread, then answers `requests` until every sender is gone or
 /// kuna is cancelled. Of the requests waiting, only the newest of each view is answered: the user has moved on
 /// from the rest. A panic in a kuna call is sent as an error. A decompile runs with the options `shared` holds when
 /// its request is taken up, and its answer says which generation of them that was.
-// ponytail: a call in flight is not cancelled by a newer request, only by `Kuna::cancel` (#11 caches instead).
+// ponytail: a call in flight is not cancelled by a newer request, only by `Kuna::cancel`.
 pub fn spawn_with(
     kuna: Arc<Kuna>,
     binary: PathBuf,
     shared: Arc<Shared>,
+    cache: Option<Arc<Cache>>,
     requests: Receiver<Request>,
     tx: Sender<Msg>,
 ) -> io::Result<JoinHandle<()>> {
     thread::Builder::new().spawn(move || {
-        let functions = guarded(|| kuna.functions(&binary));
+        let functions = guarded(|| list_functions(&kuna, &binary, cache.as_deref()));
         // ponytail: a closed channel means the loop is gone; nobody is left to tell.
         if tx.send(Msg::Functions(functions)).is_err() {
             return;
         }
-        let mut graph = None;
+        let mut kept = Kept::default();
         loop {
             let oldest = match requests.recv_timeout(IDLE) {
                 Ok(request) => request,
@@ -76,8 +88,10 @@ pub fn spawn_with(
             };
             for Request { view, address } in newest_per_view(oldest, &requests) {
                 let (options, generation) = shared.current();
-                let answer =
-                    guarded(|| lines_of(&kuna, &binary, view, address, &options, &mut graph));
+                let answer = guarded(|| {
+                    let cache = cache.as_deref();
+                    lines_of(&kuna, &binary, view, address, &options, &mut kept, cache)
+                });
                 let msg = Msg::Code {
                     view,
                     address,
@@ -90,6 +104,29 @@ pub fn spawn_with(
             }
         }
     })
+}
+
+/// The functions of `binary`: the stored list if there is one, else kuna's, which is stored unless it is empty or
+/// kuna said something.
+fn list_functions(
+    kuna: &Kuna,
+    binary: &Path,
+    cache: Option<&Cache>,
+) -> Result<Reply<Vec<Function>>, kuna::Error> {
+    if let Some(list) = cache.and_then(Cache::functions) {
+        return Ok(Reply {
+            data: list,
+            notes: None,
+        });
+    }
+    let mut reply = kuna.functions(binary)?;
+    if let (Some(cache), None) = (cache, &reply.notes)
+        && !reply.data.is_empty()
+        && let Err(error) = cache.store_functions(&reply.data)
+    {
+        reply.notes = Some(format!("cannot cache the function list: {error}"));
+    }
+    Ok(reply)
 }
 
 /// `first` and the requests waiting, in order, without those a later request for the same view replaces.
@@ -127,10 +164,19 @@ fn lines_of(
     view: View,
     address: u64,
     options: &Options,
-    graph: &mut Option<kuna::Graph>,
+    kept: &mut Kept,
+    cache: Option<&Cache>,
 ) -> Result<Reply<Vec<String>>, kuna::Error> {
     match view {
-        View::Decompile => decompile_reply(kuna.decompile(binary, address, options)?),
+        View::Decompile => match cached_decompile(cache, kept, address, options) {
+            Some(reply) => Ok(reply),
+            None => {
+                let mut reply = decompile_reply(kuna.decompile(binary, address, options)?)?;
+                let problem = kept.served.problem();
+                reply.notes = join_notes(reply.notes.into_iter().chain(problem), false);
+                Ok(reply)
+            }
+        },
         View::Disassembly => Ok(disassembly_reply(kuna.disassemble(binary, address)?)),
         View::Xrefs => Ok(xrefs_reply(kuna.xrefs(binary, address)?)),
         View::Hex => Ok(hex_reply(kuna.hexdump(binary, address)?)),
@@ -142,7 +188,7 @@ fn lines_of(
         View::Catalog => Ok(catalog_reply(kuna.catalog()?)),
         View::Modes => Ok(modes_reply(kuna.modes()?)),
         View::Docs => docs_reply(kuna, address),
-        View::CallGraph => graph_lines(graph, || kuna.graph(binary, address), address),
+        View::CallGraph => graph_lines(&mut kept.graph, || kuna.graph(binary, address), address),
     }
 }
 
@@ -175,14 +221,34 @@ fn decompile_reply(reply: Reply<Decompiled>) -> Result<Reply<Vec<String>>, kuna:
     let code = data.code.as_ref().ok_or_else(|| {
         kuna::Error::Reported("kuna returned no code for this function".to_string())
     })?;
-    let (lines, cut) = bounded(code.as_str().lines().map(str::to_string));
-    Ok(Reply {
+    Ok(code_reply(code.as_str(), notes))
+}
+
+/// The C text of `address` from the whole-binary export; none sends the request to kuna.
+fn cached_decompile(
+    cache: Option<&Cache>,
+    kept: &mut Kept,
+    address: u64,
+    options: &Options,
+) -> Option<Reply<Vec<String>>> {
+    if !options.is_default() {
+        return None;
+    }
+    let dir = cache?.serving_dir()?;
+    let code = kept.served.function(&dir, address)?;
+    Some(code_reply(&code, [FROM_CACHE.to_string()]))
+}
+
+/// `code` as lines, tabs made wide; `notes` and a cut listing are the reply's notes.
+fn code_reply(code: &str, notes: impl IntoIterator<Item = String>) -> Reply<Vec<String>> {
+    let (lines, cut) = bounded(code.lines().map(str::to_string));
+    Reply {
         data: lines
             .into_iter()
             .map(|line| line.replace('\t', TAB))
             .collect(),
         notes: join_notes(notes, cut),
-    })
+    }
 }
 
 /// A disassembly as `0x201140  PUSH RAX` lines; kuna's notes and a cut listing join the reply's notes.
@@ -596,9 +662,11 @@ fn short_pointers(data: &Xrefs) -> Option<String> {
     })
 }
 
+mod export;
 mod graph;
 mod reference;
 
+pub use export::spawn as spawn_export;
 use graph::graph_lines;
 pub use reference::spawn as spawn_reference;
 use reference::{catalog_reply, docs_reply, modes_reply};

@@ -34,13 +34,19 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
   downward as a tree, each function expanded once (`(above)` after), Enter re-centres it; one `decompile-graph` load
   per session, `none direct` when a list is empty (`agents/memory/kuna.md`, "Call graph"). Driven on a pty on
   `hello.elf`: `gc` on `main`, Enter on `square`.
+- Whole-binary cache done (#11: #84–#90, branch `perf/11-whole-binary-cache`): on open, `kuna decompile-project --stream`
+  fills a per-user cache in the background (`exporting N/M functions` in the status line); the function list and the
+  decompile of every finished function come from it (`from the whole-binary cache`, default options only); the next
+  open of the same binary needs no `kuna functions` and no per-call decompile; `:export DIR` copies the project out
+  (`agents/memory/kuna.md`, "Whole-binary export"; `decisions.md`, "Whole-binary cache"). Driven on a pty on `/bin/ls`:
+  first open, second open, `:set! namestyle ghidra` (cache not used), `:export`.
 - Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #66 (kill kuna's process tree on
   Windows: job object).
 
 ## Layout
 | Path | What |
 |---|---|
-| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `jumps.rs` the pure jumplist; `kuna.rs` (+ `kuna/json.rs`, `scratch.rs`, `text.rs`, `tests.rs`) the kuna driver; `kuna/reference.rs` the catalog, modes and docs; `options.rs` the options a decompile runs with (`Options`, `Shared`); `worker/reference.rs` their views and the thread that loads them; `app/options.rs` the `:set` `:mode` `:catalog` `:docs` commands; `kuna/graph.rs` the call-graph types and `Kuna::graph`; `worker/graph.rs` the call-graph tree |
+| `src/` | the crate; `main.rs` stays thin (args, terminal, guard); `args.rs` the command line; `app.rs` state, the views cache, event loop; `worker.rs` the kuna worker thread (functions, then the views asked for); `ui.rs` drawing; `keymap.rs` the pure vim keymap; `view.rs` the pure text-pane cursor (motions, scroll, search); `jumps.rs` the pure jumplist; `kuna.rs` (+ `kuna/json.rs`, `scratch.rs`, `text.rs`, `tests.rs`) the kuna driver; `kuna/reference.rs` the catalog, modes and docs; `options.rs` the options a decompile runs with (`Options`, `Shared`); `worker/reference.rs` their views and the thread that loads them; `app/options.rs` the `:set` `:mode` `:catalog` `:docs` commands; `kuna/graph.rs` the call-graph types and `Kuna::graph`; `worker/graph.rs` the call-graph tree; `cache.rs` the per-user cache (key, entry, function list, publish, `:export`) and `cache/index.rs` serving a function from the export; `files.rs` `open_regular`; `kuna/export.rs` `Kuna::export` and the `.streaming` status; `worker/export.rs` the export thread; `app/events.rs` the input and signal threads; `app/lookup.rs` finding a function by name or address |
 | `tests/` | `smoke.rs` drives the built binary through every path that ends before the terminal is taken over; `fixtures/` = `hello.elf` (+ `hello.c`), `data.elf` (+ `data.c`: a string, a crypto constant, a gzip blob) and recorded kuna JSON |
 | `kuna-version` | the tested kuna version (line 1) + a sha256 per platform |
 | `scripts/gate.sh` | push gate = CI `gate` job: fetches kuna, then fmt, clippy, tests + coverage ≥ 80% |
@@ -73,18 +79,18 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` (done) |
 | #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**, done) |
 | #9 | xrefs, strings, crypto, blobs, hex, p-code, summary (done) · #10 options (done) (`catalog`, `:set`, `:mode`) |
-| #11 | whole-binary cache (`decompile-project --stream`) · #12 call graph (done) · #13 unpack + FID |
+| #11 | whole-binary cache (done) · #12 call graph (done) · #13 unpack + FID |
 | #14 | REA engine (static-only allow-list) · #15 visual mode + OSC 52 yank |
 | #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
 
 ## Open work / next steps
 1. #66 (Windows process-tree kill) only when the user wants it: a job object needs `windows-sys` or hand-declared
    kernel32 calls (new `unsafe`).
-2. #11 whole-binary cache (plan mode first: it replaces the per-view reload and `evict`, and can absorb the graph
-   cache), then #13 unpack + FID. `v0.1.0` only on the user's `release`.
+2. #13 unpack + FID (plan mode first), then #14 REA engine, #15 visual mode. `v0.1.0` only on the user's `release`.
+   The cache could also serve disassembly (from the `.asm`) and absorb the graph cache; not done.
 3. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
 4. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
 5. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
 
 6. By hand on a pty (only `TestBackend` and real-kuna tests so far; `gc` was driven on a pty on 2026-11-25):
-   `gr gh gp gs gi`, `:set namestyle ghidra`, `:catalog`, `:docs`.
+   `gr gh gp gs gi`, `:catalog`, `:docs` (`:set`, the cache and `:export` were driven on 2026-11-25).

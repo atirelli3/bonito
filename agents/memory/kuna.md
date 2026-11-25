@@ -181,3 +181,30 @@ Verified 2026-11-25 against kuna 1.1005 on `tests/fixtures/hello.elf` and `/bin/
 - [WHY] The graph does not depend on `:set` options or on which function is shown: the worker loads it once per session
   (`Option<Graph>`, `worker::graph::graph_lines`), every view is built from it, and a failed load is not kept, so the
   next `gc` retries. kuna's stderr from that one load is told with the answer that loaded it, not repeated.
+
+## Whole-binary export (#11)
+Verified 2026-11-25 against kuna 1.1005 on `tests/fixtures/hello.elf` and `/bin/ls` (real `.streaming` samples are in
+`src/kuna/export.rs`'s tests).
+- [WHY] `decompile-project <bin> --stream -o DIR` writes `<binary file name>.c` `.h` `.asm`, `README.md` and `index.jsonl`
+  in one load; stdout is one "wrote …" line. `/bin/ls`: 0.73 s for 134 functions (its other 91 are imports and thunks),
+  against 0.19 s for one `decompile` and 0.08 s for `functions`: the cache pays on big binaries (80 s per call on the
+  147 MB one). It reuses a folder that has files in it, so bonito only exports into one that is empty or new.
+- [WHY] `index.jsonl` is append-only, one line per finished function and written *after* its block in the `.c`:
+  `{seq, name, addr:"0x…", size, c_offset, c_len, error}` (`error` is null on success and a key bonito requires). The
+  order is completion order (`_start, main, square, add`), not address order. Every block starts with
+  `// Function: <name> @ 0x<addr>`; bonito serves a block only when that line names the address asked for.
+- [WHY] `.streaming` is one JSON line, schema 1: `phase` (`loading`, `decompiling`, `finalizing`, `failed`), `pid`,
+  `functions_total` (null while loading), `functions_done`, `functions_failed`, `error`, timing keys bonito ignores.
+  It exists only while the export runs, so its absence is the end marker. A load failure (a junk file) exits 1 with
+  `phase: failed` and the reason in `error`; bonito reads it to say why. A newer schema is named as such before the
+  body is read; a renamed count fails loudly.
+- [WHY] kuna prints `[kuna --stream] serial run; --jobs auto uses every core` on stderr of every normal export: it is
+  not a problem and is dropped from the notes. Any other stderr (loader repairs, per-function warnings) means the
+  export may be degraded: it is not published, and the status line says what kuna said.
+- [WHY] **The export's C text is not the per-call text.** It types call arguments callee-first with the whole binary in
+  view: hello `main` is `void main(void)` against `int main(void)` per call, and 5 of 25 `/bin/ls` functions differ
+  (20 are identical). A view served from the cache says so in its note. `--jobs` would make it differ again, and
+  multiplies RAM: the export is serial.
+- [WHY] `Kuna::export` runs through the same `run` as every call (env allowlist, scratch cwd, process-group kill, the
+  stop flag) with a 24 h deadline in place of 300 s. It refuses a non-empty folder, checks afterwards that `.streaming`
+  is gone and `index.jsonl` is there, and counts the rows (a row with an `error` is a function kuna could not decompile).

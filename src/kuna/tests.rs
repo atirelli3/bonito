@@ -568,6 +568,81 @@ fn the_binary_argument_is_absolute_so_it_is_never_read_as_a_flag() {
 }
 
 #[test]
+fn a_real_export_of_hello_fills_the_folder_and_ends_the_status() {
+    let scratch = Scratch::new().expect("a directory");
+    let dir = scratch.path().join("project");
+    let reply = real_kuna()
+        .export(&fixture("hello.elf"), &dir)
+        .expect("exports");
+    let names: Vec<String> = fs::read_dir(&dir)
+        .expect("a folder")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    for wanted in ["hello.elf.c", "hello.elf.h", "hello.elf.asm", "index.jsonl"] {
+        assert!(
+            names.iter().any(|name| name == wanted),
+            "{wanted} in {names:?}"
+        );
+    }
+    assert!(!names.iter().any(|name| name == ".streaming"), "{names:?}");
+    let index = fs::read_to_string(dir.join("index.jsonl")).expect("an index");
+    assert_eq!(index.lines().count(), 4);
+    assert_eq!(reply.notes, None);
+    assert_eq!((reply.data.functions, reply.data.failed), (4, 0));
+}
+
+#[test]
+fn an_export_into_a_folder_that_has_something_in_it_is_refused() {
+    let scratch = Scratch::new().expect("a directory");
+    fs::write(scratch.path().join("old.c"), "x").expect("writes");
+    let result = real_kuna().export(&fixture("hello.elf"), scratch.path());
+    assert!(matches!(result, Err(Error::Reported(_))), "{result:?}");
+}
+
+#[test]
+fn an_export_kuna_reports_as_failed_says_why_from_its_status_file() {
+    let scratch = Scratch::new().expect("a directory");
+    let junk = scratch.path().join("junk.bin");
+    fs::write(&junk, b"this is not an executable").expect("writes");
+    let dir = scratch.path().join("project");
+    let result = real_kuna().export(&junk, &dir);
+    let Err(Error::Reported(message)) = result else {
+        panic!("expected the reason kuna wrote to .streaming: {result:?}");
+    };
+    assert!(message.starts_with("the export failed"), "{message}");
+}
+
+#[test]
+fn an_export_needs_an_absolute_folder() {
+    let relative = real_kuna().export(&fixture("hello.elf"), Path::new("project"));
+    assert!(matches!(relative, Err(Error::Reported(_))), "{relative:?}");
+}
+
+#[test]
+fn a_cancelled_export_does_not_start() {
+    let kuna = real_kuna();
+    let scratch = Scratch::new().expect("a directory");
+    let dir = scratch.path().join("project");
+    kuna.cancel();
+    let cancelled = kuna.export(&fixture("hello.elf"), &dir);
+    assert!(matches!(cancelled, Err(Error::Cancelled)), "{cancelled:?}");
+    assert!(!dir.exists(), "kuna never ran");
+}
+
+#[test]
+fn a_call_is_killed_at_the_timeout_it_is_given() {
+    let args = query_args("functions", &fixture("hello.elf"), &["--json"]).expect("builds");
+    let result = real_kuna().output_for(args, Duration::ZERO);
+    assert!(matches!(result, Err(Error::TimedOut(_))), "{result:?}");
+}
+
+#[test]
 fn the_real_graph_of_hello_has_four_functions_and_four_edges() {
     let kuna = real_kuna();
     let reply = kuna.graph(&fixture("hello.elf"), 0x201140).expect("loads");
