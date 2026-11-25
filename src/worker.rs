@@ -64,7 +64,7 @@ pub fn spawn(
 /// kuna is cancelled. Of the requests waiting, only the newest of each view is answered: the user has moved on
 /// from the rest. A panic in a kuna call is sent as an error. A decompile runs with the options `shared` holds when
 /// its request is taken up, and its answer says which generation of them that was.
-// ponytail: a call in flight is not cancelled by a newer request, only by `Kuna::cancel` (#11 caches instead).
+// ponytail: a call in flight is not cancelled by a newer request, only by `Kuna::cancel`.
 pub fn spawn_with(
     kuna: Arc<Kuna>,
     binary: PathBuf,

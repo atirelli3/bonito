@@ -223,3 +223,43 @@ fact the code doesn't say.
   the graph lacks; Enter on an import or thunk that `kuna functions` does not list says "no function: 0x…"; `tree`
   rebuilds its index per request, O(E log E); the address on a row can be forged by a name holding `0x…` (Enter then
   opens another listed function); a binary rebuilt on disk is not re-read.
+
+## Whole-binary cache (#11)
+- [USER-YES] (2026-11-25) The export starts on its own when a binary is opened and the cache has none; progress is in the
+  status line (`exporting 120/3153 functions`). While any `:set` / `:mode` option is set the cache is not used (it holds
+  the default-option text only) and the status line says `(cache not used)`; resetting the options brings it back.
+- [WHY] Layout: `<user cache dir>/bonito/` (`$XDG_CACHE_HOME`, else `~/Library/Caches` on macOS, `~/.cache`, or
+  `%LOCALAPPDATA%`; only absolute paths count), made 0700 and refused when it is a link or has group/other bits. An
+  entry is `<clean file name>-<FNV-1a hash of the key>`; the key (path, size, mtime, kuna version) is also stored in
+  `key.json` and compared on every use, so a hash collision or a planted folder is a miss, never a wrong answer. FNV is
+  written by hand: `DefaultHasher` is not stable across Rust versions.
+- [WHY] Publishing: each session exports into its own `<entry>.partial-<pid>` and renames it to the entry when kuna is done,
+  after writing `key.json` last (any `key.json` kuna left, a FIFO or a link included, is removed first and the new one
+  made with `create_new`, 0600, or quit would hang on it). The rename comes first, so a finished entry of another
+  session is never touched; only an entry that is not a finished export is removed, links as links and never their
+  target. A leftover folder with this pid is cleared before an export starts.
+- [WHY] An export is not published when kuna said anything (see `kuna.md`), when no function decompiled (none, or all
+  failed), or when the binary changed meanwhile (the key is taken again). The thread always clears its folder and ends
+  with one status message; a cleanup that fails is said too; the failure text is cut to 120 characters so it cannot
+  push the version warning off the status line.
+- [WHY] The function list is cached in `<entry>.functions.json` (format version, the key, the list), written to a new file
+  and renamed, 0600; read back only as a regular file within 64 MiB, at most 1 000 000 functions of at most 64 aliases,
+  never empty, with the names cleaned again. It is stored only when kuna said nothing; a store that fails is a note.
+- [WHY] Everything read back is hostile: `open_regular` (`src/files.rs`) opens only regular files, with `O_NONBLOCK` (hand
+  declared per OS: `0x800` Linux, `0x4` macOS and the BSDs) and a second check on the open handle, because a FIFO swapped
+  in would block the worker and quit joins it. A block is served from `Served` (`src/cache/index.rs`) only when it is in
+  bounds, at most 2 MiB, and its header names the address asked for, so a stale offset is a miss and never another
+  function's text; `Served` starts over when the folder changes or the index gets shorter; exactly one `.c` file; an
+  index line over 1 MiB stops the reading; lines that are not understood are counted and said as a note on the per-call
+  answer. A function kuna failed in the export is decompiled per call.
+- [WHY] `:export DIR` copies the finished export (but for `key.json`) into a **new** folder, through `open_regular` and
+  `create_new` (owner-only on Unix, no overwrite, no links followed); it removes the folder it made if a copy fails.
+- [KEPT] Left as they are: no eviction and no size cap (a folder per binary stays until it is deleted by hand, and a
+  killed session leaves its `.partial-<pid>`); a kuna build with the same version string, or a same-size same-mtime
+  replacement, is not told apart; any stderr note from kuna means no cache, so such a binary is exported again every
+  session (the status line says why); progress that cannot be read shows plain `exporting…`; the first open runs the
+  export, `kuna functions` and the per-call fallbacks together (RAM on a big binary); only the decompile view and the
+  function list come from the cache (disassembly, xrefs, hex, p-code and strings stay per call); `:export` blocks the
+  loop while it copies and expects a flat folder; `Progress.failed` is parsed and not shown; a FIFO swapped in between
+  the check and the open is covered by `O_NONBLOCK` only on Linux, macOS and the BSDs; the Windows rename and the
+  `-o` path are exercised by CI only.

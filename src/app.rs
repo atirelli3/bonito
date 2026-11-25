@@ -327,7 +327,7 @@ impl App {
     }
 
     /// Drops loaded views other than the one shown while more than `MAX_VIEWS` are kept.
-    // ponytail: the victims are arbitrary and a dropped view loses its cursor; #11 replaces this with a cache.
+    // ponytail: the victims are arbitrary and a dropped view loses its cursor; a dropped decompile comes back from the cache.
     fn evict(&mut self) {
         let keep = self.shown.as_ref().map(|shown| shown.request);
         while self.views.len() > MAX_VIEWS {
