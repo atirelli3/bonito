@@ -85,20 +85,23 @@ impl Deref for Code {
     }
 }
 
+/// `text` with every unsafe character but newline and tab replaced by a space.
+pub fn multiline(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if is_unsafe(c) && c != '\n' && c != '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 impl<'de> Deserialize<'de> for Code {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(deserializer)?;
-        Ok(Self(
-            raw.chars()
-                .map(|c| {
-                    if is_unsafe(c) && c != '\n' && c != '\t' {
-                        ' '
-                    } else {
-                        c
-                    }
-                })
-                .collect(),
-        ))
+        Ok(Self(multiline(&raw)))
     }
 }
 

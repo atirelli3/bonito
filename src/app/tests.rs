@@ -701,6 +701,110 @@ fn a_view_of_one_function_from_a_binary_wide_view_says_when_no_function_is_known
 }
 
 #[test]
+fn colon_catalog_colon_modes_and_colon_docs_open_kunas_own_views_at_zero() {
+    let commands = [
+        (":catalog", View::Catalog),
+        (":modes", View::Modes),
+        (":docs", View::Docs),
+    ];
+    for (line, view) in commands {
+        let (mut app, queue) = three();
+        type_text(&mut app, line);
+        enter(&mut app);
+        assert_eq!(queue.try_recv(), Ok(asked(view, 0)), "{line}");
+        let name = app.shown.as_ref().map(|shown| shown.name.as_str());
+        assert_eq!(name, Some("kuna"), "{line}");
+    }
+}
+
+/// Tells `app` kuna's topics: cli, options, agents, phases, modes.
+fn know_the_topics(app: &mut App) {
+    let topics = include_str!("../../tests/fixtures/docs-topics.json");
+    let reference = Reference {
+        catalog: Vec::new(),
+        modes: Vec::new(),
+        topics: serde_json::from_str(topics).expect("topics"),
+    };
+    let reply = Reply {
+        data: reference,
+        notes: None,
+    };
+    app.update(Msg::Reference(Ok(reply))).expect("updates");
+}
+
+#[test]
+fn colon_docs_with_a_topic_opens_that_document_by_its_number() {
+    let (mut app, queue) = three();
+    know_the_topics(&mut app);
+    type_text(&mut app, ":docs options");
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::Docs, 2)));
+    let name = app.shown.as_ref().map(|shown| shown.name.as_str());
+    assert_eq!(name, Some("options"));
+}
+
+#[test]
+fn colon_docs_with_a_topic_kuna_does_not_have_lists_the_ones_it_has() {
+    let (mut app, queue) = three();
+    know_the_topics(&mut app);
+    type_text(&mut app, ":docs nope");
+    enter(&mut app);
+    assert_eq!(
+        app.message.as_deref(),
+        Some("no topic: nope (known: cli, options, agents, phases, modes)")
+    );
+    assert!(queue.try_recv().is_err(), "nothing was asked for");
+}
+
+#[test]
+fn what_kuna_said_loading_its_reference_and_a_failure_to_load_it_reach_the_status_line() {
+    let mut app = app();
+    assert_eq!(app.reference_note(), None);
+    let reference = Reference {
+        catalog: Vec::new(),
+        modes: Vec::new(),
+        topics: Vec::new(),
+    };
+    let said = Reply {
+        data: reference,
+        notes: Some("a loader repair".to_string()),
+    };
+    app.update(Msg::Reference(Ok(said))).expect("updates");
+    assert_eq!(app.reference_note().as_deref(), Some("a loader repair"));
+    let failed = Msg::Reference(Err(kuna::Error::Reported("kuna docs: bad".to_string())));
+    app.update(failed).expect("updates");
+    let note = app.reference_note().unwrap_or_default();
+    assert_eq!(
+        note,
+        "kuna's options and docs could not be loaded: kuna reported: kuna docs: bad"
+    );
+    // The functions answer must not wipe it: it has a field of its own.
+    app.update(answer(&["main"], None)).expect("updates");
+    assert_eq!(app.reference_note().as_deref(), Some(note.as_str()));
+}
+
+#[test]
+fn colon_docs_with_a_topic_says_when_the_reference_is_not_there_yet_or_failed() {
+    let (mut app, queue) = three();
+    type_text(&mut app, ":docs options");
+    enter(&mut app);
+    assert_eq!(
+        app.message.as_deref(),
+        Some("the reference is still loading")
+    );
+    let failed = Msg::Reference(Err(kuna::Error::Cancelled));
+    app.update(failed).expect("updates");
+    type_text(&mut app, ":docs options");
+    enter(&mut app);
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.starts_with("the reference could not be loaded: "),
+        "{message}"
+    );
+    assert!(queue.try_recv().is_err(), "nothing was asked for");
+}
+
+#[test]
 fn colon_crypto_and_colon_blobs_open_their_views() {
     for (line, view) in [(":crypto", View::Crypto), (":blobs", View::Blobs)] {
         let (mut app, queue) = three();

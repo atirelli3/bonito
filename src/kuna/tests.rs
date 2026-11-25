@@ -405,6 +405,53 @@ fn the_binary_wide_answers_are_typed_and_clean() {
     assert_eq!(entry, Some("_start"));
 }
 
+#[test]
+fn the_catalog_the_modes_and_the_topics_come_from_the_real_kuna() {
+    let reply = real_kuna().reference().expect("loads");
+    assert_eq!(reply.notes, None);
+    let reference = reply.data;
+    assert!(
+        reference.catalog.len() > 200,
+        "{} rows",
+        reference.catalog.len()
+    );
+    let namestyle = reference
+        .catalog
+        .iter()
+        .find(|row| row.option == "namestyle");
+    assert_eq!(namestyle.expect("a row").values, ["angr", "ghidra"]);
+    let modes: Vec<&str> = reference
+        .modes
+        .iter()
+        .map(|mode| mode.name.as_str())
+        .collect();
+    assert_eq!(modes, ["auto", "reliable", "aggressive", "fast"]);
+    assert!(
+        reference
+            .topics
+            .iter()
+            .any(|topic| topic.topic == "options")
+    );
+}
+
+#[test]
+fn a_document_is_plain_text_and_a_topic_that_is_not_one_is_refused() {
+    let kuna = real_kuna();
+    let doc = kuna.doc("modes").expect("reads");
+    assert!(
+        doc.data.starts_with("# Decompiler modes"),
+        "{}",
+        &doc.data[..40]
+    );
+    let error = kuna.doc("nosuchtopic").expect_err("unknown");
+    assert!(
+        error.to_string().contains("no embedded doc named"),
+        "{error}"
+    );
+    assert!(matches!(kuna.doc("-x"), Err(Error::Reported(_))));
+    assert!(matches!(kuna.doc(""), Err(Error::Reported(_))));
+}
+
 /// The C text of `main` in `hello.elf` decompiled with `options`.
 fn main_with(options: &Options) -> String {
     let reply = real_kuna().decompile(&fixture("hello.elf"), 0x201140, options);

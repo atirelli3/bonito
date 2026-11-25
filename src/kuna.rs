@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io, thread};
 
 mod json;
+mod reference;
 mod scratch;
 mod text;
 
@@ -23,6 +24,7 @@ pub use json::{
     Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Located, Op, Pcode, Strings,
     Summary, Varnode, Xrefs,
 };
+pub use reference::{CatalogRow, Mode, Reference, Topic};
 pub use text::{Text, is_unsafe, single_line};
 
 /// The kuna binary's file name on this platform.

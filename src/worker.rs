@@ -121,6 +121,9 @@ fn lines_of(
         View::Crypto => Ok(crypto_reply(kuna.crypto(binary)?)),
         View::Blobs => Ok(blobs_reply(kuna.blobs(binary)?)),
         View::Summary => Ok(summary_reply(kuna.summary(binary)?)),
+        View::Catalog => Ok(catalog_reply(kuna.catalog()?)),
+        View::Modes => Ok(modes_reply(kuna.modes()?)),
+        View::Docs => docs_reply(kuna, address),
         // ponytail: #12 adds the call graph; nothing asks for it yet.
         View::CallGraph => Err(kuna::Error::Reported(format!(
             "the {view:?} view is not available in bonito yet"
@@ -577,6 +580,11 @@ fn short_pointers(data: &Xrefs) -> Option<String> {
         None => format!("stored pointers {coverage}"),
     })
 }
+
+mod reference;
+
+pub use reference::spawn as spawn_reference;
+use reference::{catalog_reply, docs_reply, modes_reply};
 
 #[cfg(test)]
 mod tests;

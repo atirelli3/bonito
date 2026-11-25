@@ -1,0 +1,80 @@
+[
+  {
+    "option": "compareform",
+    "values": [
+      "canonical",
+      "original"
+    ],
+    "default": "original",
+    "destructive_as_default": false,
+    "phase": "P3",
+    "subphase": "comparison-canonicalization",
+    "strength": "HARD",
+    "rewind": "P3",
+    "issue": "GH-558",
+    "summary": "Whether comparisons keep their source form (V <= c) or the analysis-canonical rewrite (V < c+1).",
+    "use_when": "Flip to canonical only to reproduce upstream Ghidra output; original (default) is more faithful to source.",
+    "example": "option compareform canonical",
+    "source_decompiler": "ghidra-upstream",
+    "inspiration": "Ghidra upstream comparison rendering (GH-558 prototype)",
+    "change_kind": "presentation-default",
+    "tier": "core",
+    "symptoms": [
+      "comparison constant off by one versus upstream ghidra (x <= 9 vs x < 10)",
+      "need the analysis-canonical compare form to diff against upstream ghidra output"
+    ]
+  },
+  {
+    "option": "namestyle",
+    "values": [
+      "angr",
+      "ghidra"
+    ],
+    "default": "angr",
+    "destructive_as_default": false,
+    "phase": "P9",
+    "subphase": "naming-policy",
+    "strength": "HARD",
+    "rewind": "P9",
+    "issue": "angr-naming",
+    "summary": "Master default-name scheme: angr-style (locals vN, args aN, global data dat_<addr>, unnamed functions sub_<addr>, labels label_<addr>, plus a // rax / // stack - 0x10 source-location comment per local) vs upstream Ghidra (iVar/uVar/pcVar, param_N, <type>Ram<addr>, func_, code_).",
+    "use_when": "Set to ghidra to reproduce upstream Ghidra naming byte-for-byte; angr (default) makes default output read like the angr decompiler.",
+    "example": "option namestyle ghidra",
+    "source_decompiler": "angr",
+    "inspiration": "angr decompiler default naming scheme (vN / aN / sub_<addr> / dat_<addr> / label_<addr>)",
+    "change_kind": "presentation-default",
+    "tier": "core",
+    "symptoms": [
+      "iVar1/uVar2/param_1 ghidra-style names wanted instead of v1/a1 (set ghidra)",
+      "v-numbered locals and sub_/dat_/label_ names in the default output",
+      "byte-for-byte comparison against upstream ghidra naming"
+    ]
+  },
+  {
+    "option": "objcsdk",
+    "values": [
+      "<directory>",
+      "off"
+    ],
+    "default": "off",
+    "destructive_as_default": false,
+    "phase": "P1",
+    "subphase": "external-refinement",
+    "strength": "HARD",
+    "rewind": "P1",
+    "issue": "kuna-analysis-objc",
+    "summary": "Read Objective-C method signatures from SDK headers for the selectors an image only sends. A selector stub `objc_msgSend$setAlpha:` gets a prototype only when something in the image declares the selector (a class, category or protocol of its own), so a send to a framework method kept the untyped call-site inference and lost its arguments (`objc_msgSend$setHidden:();`). The declarations exist in the SDK the app was built against, and Apple's headers are never shipped with kuna, so this names a directory to read at load: an SDK root (`.../iPhoneOS.sdk`) contributes the `Headers/` of every framework the image links (LC_LOAD_DYLIB), any other directory every `.h` under it. The reader takes the declaration subset of the grammar — `@interface`/`@protocol`/category bodies, `- (ret)sel:(T)a ...;` methods, `@property (attrs) T name;` with `getter=`/`setter=`/`readonly` honoured, `typedef`s so NSInteger, CGFloat, NS_ENUM names and NSString-backed typed enums resolve — and turns each into the type encoding the runtime metadata would carry (`v@:d`), which rides the existing selector-to-prototype path: scalars and pointers pinned to their x/d registers, an HFA struct such as CGRect spread over d0..d3 as `arg_x, arg_y, arg_width, arg_height`, NSRange over two x registers, a larger struct (CGAffineTransform) the pointer the caller passes, a struct return the flat struct the model places in d0..d3. A type the reader cannot encode (an unknown struct, a function pointer) makes the selector unusable rather than guessed; one selector declared two ways across classes is dropped (a differing class-pointer argument is not a disagreement, but leaves the selector with neither class). The image's own declarations always win over the headers. Load-time, env-bridged (KUNA_OBJCSDK): set it before the `load file` it should apply to; nothing derived from the headers is written anywhere.",
+    "use_when": "Off (default): only the image's own metadata types a send. Point it at the SDK the app was built against (`--option objcsdk ~/sdks/iPhoneOS16.5.sdk`) to type every UIKit/Foundation send; on a 1.9 MB iOS app that takes argument-less stub calls from 2,897 to 1,221 of 25,084 and renders `objc_msgSend$setAlpha:(v, 1.0)`, `objc_msgSend$setFrame:(v, r.x, r.y, r.width, r.height)`. A directory of your own headers works the same way. Inert unless `objc` is on.",
+    "example": "option objcsdk /path/to/iPhoneOS.sdk",
+    "source_decompiler": "kuna",
+    "inspiration": "IDA's ObjC type library (objc.til) and Ghidra's objc_class.gdt archives, which ship typed selectors; here the user's own SDK stands in",
+    "change_kind": "analysis-enablement",
+    "tier": "analysis",
+    "symptoms": [
+      "objc_msgSend$setFoo:() renders with no argument although the caller sets one",
+      "objc_msgSend$setAlpha: shows 0x3ff0000000000000 instead of 1.0",
+      "objc_msgSend$setFrame: passes one word where a CGRect was built",
+      "a framework method's stub returns undefined16 or unsigned long instead of its declared type"
+    ]
+  }
+]
