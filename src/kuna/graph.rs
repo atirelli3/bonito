@@ -1,6 +1,4 @@
 //! The call graph: what `kuna decompile-graph` prints (schema 4), as nodes and edges.
-// ponytail: #80 reads the graph; remove this `allow` then.
-#![allow(dead_code)]
 
 use super::text::Text;
 use super::{Error, Kuna, Reply, hex, parse, query_args};
@@ -38,8 +36,9 @@ pub struct Edge {
 }
 
 /// Every function of the program and the edges between them.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct Graph {
+    #[serde(rename = "functions")]
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
 }
@@ -49,14 +48,6 @@ pub struct Graph {
 #[serde(rename_all = "camelCase")]
 struct Header {
     schema_version: u32,
-}
-
-/// The nodes and edges of a `decompile-graph` document.
-#[derive(Debug, Deserialize)]
-struct Body {
-    #[serde(rename = "functions")]
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
 }
 
 impl Kuna {
@@ -82,11 +73,7 @@ fn read(text: &str) -> Result<Graph, Error> {
             header.schema_version
         )));
     }
-    let body: Body = parse(text)?;
-    Ok(Graph {
-        nodes: body.nodes,
-        edges: body.edges,
-    })
+    parse(text)
 }
 
 #[cfg(test)]
