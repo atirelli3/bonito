@@ -5,6 +5,7 @@ mod args;
 mod jumps;
 mod keymap;
 mod kuna;
+mod options;
 mod ui;
 mod view;
 mod worker;

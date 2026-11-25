@@ -405,6 +405,60 @@ fn the_binary_wide_answers_are_typed_and_clean() {
     assert_eq!(entry, Some("_start"));
 }
 
+/// The C text of `main` in `hello.elf` decompiled with `options`.
+fn main_with(options: &Options) -> String {
+    let reply = real_kuna().decompile(&fixture("hello.elf"), 0x201140, options);
+    let code = reply.expect("decompiles").data.code;
+    code.expect("has code").as_str().to_string()
+}
+
+#[test]
+fn an_option_and_a_mode_visibly_change_the_decompilation() {
+    let plain = main_with(&Options::default());
+    assert!(
+        plain.contains("v1") && plain.starts_with("int main"),
+        "{plain}"
+    );
+    let ghidra = Options::default().with_option("namestyle", "ghidra");
+    let ghidra = main_with(&ghidra.expect("valid"));
+    assert!(
+        ghidra.contains("xVar1") && !ghidra.contains("v1 "),
+        "{ghidra}"
+    );
+    let reliable = main_with(&Options::default().with_mode("reliable").expect("valid"));
+    assert!(reliable.starts_with("int4 main"), "{reliable}");
+}
+
+#[test]
+fn a_mode_and_several_options_all_reach_kuna() {
+    let options = Options::default().with_mode("reliable").expect("valid");
+    let options = options.with_option("namestyle", "ghidra").expect("valid");
+    let options = options.with_option("realtypes", "off").expect("valid");
+    let code = main_with(&options);
+    assert!(code.starts_with("int4 main"), "the mode: {code}");
+    assert!(code.contains("xVar1"), "the first option: {code}");
+    assert!(code.contains("xunknown4"), "the second option: {code}");
+}
+
+#[test]
+fn an_option_kuna_does_not_know_is_an_error_that_says_so() {
+    let options = Options::default().with_option("nosuchoption", "x");
+    let error = real_kuna()
+        .decompile(&fixture("hello.elf"), 0x201140, &options.expect("valid"))
+        .expect_err("kuna refuses the name");
+    assert!(matches!(error, Error::Failed { .. }), "{error:?}");
+    assert!(error.to_string().contains("Unknown option"), "{error}");
+}
+
+#[test]
+fn a_value_kuna_rejects_is_an_error_that_carries_its_message() {
+    let options = Options::default().with_option("namestyle", "bogus");
+    let error = real_kuna()
+        .decompile(&fixture("hello.elf"), 0x201140, &options.expect("valid"))
+        .expect_err("kuna refuses the value");
+    assert!(error.to_string().contains("namestyle must be"), "{error}");
+}
+
 #[test]
 fn a_summary_that_reports_an_error_is_an_error() {
     let text = include_str!("../../tests/fixtures/summary-hello.json")
@@ -477,7 +531,7 @@ fn a_document_that_is_not_json_is_a_parse_error() {
 #[test]
 fn decompiles_a_function_by_address() {
     let reply = real_kuna()
-        .decompile(&fixture("hello.elf"), 0x201140)
+        .decompile(&fixture("hello.elf"), 0x201140, &Options::default())
         .expect("decompiles");
     assert_eq!(reply.notes, None);
     assert_eq!(reply.data.name, "main");
@@ -494,7 +548,7 @@ fn decompiles_a_function_by_address() {
 #[test]
 fn decompiling_an_unmapped_address_is_a_failed_call() {
     let error = real_kuna()
-        .decompile(&fixture("hello.elf"), 0x10)
+        .decompile(&fixture("hello.elf"), 0x10, &Options::default())
         .expect_err("unmapped");
     assert!(error.to_string().contains("not mapped"), "{error}");
 }
@@ -558,7 +612,7 @@ fn a_disassembly_says_whether_it_starts_at_a_function() {
 #[test]
 fn decompiling_inside_a_function_comes_back_with_kunas_note() {
     let reply = real_kuna()
-        .decompile(&fixture("hello.elf"), 0x201144)
+        .decompile(&fixture("hello.elf"), 0x201144, &Options::default())
         .expect("decompiles");
     let note = reply.notes.expect("kuna notes the address is interior");
     assert!(note.contains("interior to main"), "{note}");

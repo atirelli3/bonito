@@ -16,6 +16,7 @@ mod json;
 mod scratch;
 mod text;
 
+use crate::options::Options;
 use scratch::Scratch;
 
 pub use json::{
@@ -289,10 +290,18 @@ impl Kuna {
             .try_map(into_functions)
     }
 
-    /// The C text and warnings for the function at `address`.
-    pub fn decompile(&self, binary: &Path, address: u64) -> Result<Reply<Decompiled>, Error> {
+    /// The C text and warnings for the function at `address`, decompiled with `options`.
+    pub fn decompile(
+        &self,
+        binary: &Path,
+        address: u64,
+        options: &Options,
+    ) -> Result<Reply<Decompiled>, Error> {
         let target = hex(address);
-        self.query("decompile", binary, &[target.as_str(), "--addr"])?
+        let flags = options.args();
+        let mut extra = vec![target.as_str(), "--addr"];
+        extra.extend(flags.iter().map(String::as_str));
+        self.query("decompile", binary, &extra)?
             .try_map(into_decompiled)
     }
 

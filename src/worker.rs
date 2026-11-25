@@ -6,6 +6,7 @@ use crate::kuna::{
     self, Blobs, Crypto, Decompiled, Disassembly, Hexdump, Kuna, Located, Op, Pcode, Reply,
     Strings, Summary, Varnode, Xrefs,
 };
+use crate::options::Options;
 use std::io;
 use std::iter::once;
 use std::panic::{self, AssertUnwindSafe};
@@ -110,7 +111,8 @@ fn lines_of(
     address: u64,
 ) -> Result<Reply<Vec<String>>, kuna::Error> {
     match view {
-        View::Decompile => decompile_reply(kuna.decompile(binary, address)?),
+        // ponytail: #76 passes the options the user set.
+        View::Decompile => decompile_reply(kuna.decompile(binary, address, &Options::default())?),
         View::Disassembly => Ok(disassembly_reply(kuna.disassemble(binary, address)?)),
         View::Xrefs => Ok(xrefs_reply(kuna.xrefs(binary, address)?)),
         View::Hex => Ok(hex_reply(kuna.hexdump(binary, address)?)),
