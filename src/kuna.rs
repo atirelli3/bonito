@@ -28,7 +28,7 @@ pub use json::{
     Summary, Varnode, Xrefs,
 };
 pub use reference::{CatalogRow, Mode, Reference, Topic};
-pub use text::{Text, is_unsafe, single_line};
+pub use text::{Text, is_unsafe, multiline, single_line};
 
 /// The kuna binary's file name on this platform.
 const KUNA_EXE: &str = if cfg!(windows) { "kuna.exe" } else { "kuna" };

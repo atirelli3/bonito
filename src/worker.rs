@@ -1,7 +1,7 @@
 //! The kuna worker: lists the functions, then answers the requests for views.
 
 use crate::app::{Msg, Request};
-use crate::cache::Cache;
+use crate::cache::{Cache, Served};
 use crate::keymap::View;
 use crate::kuna::{
     self, Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Kuna, Located, Op, Pcode,
@@ -39,6 +39,16 @@ const PANIC_LIMIT: usize = 200;
 /// How often an idle worker checks whether kuna was cancelled.
 const IDLE: Duration = Duration::from_millis(100);
 
+/// What the worker keeps between requests: the call graph, and how far the export's index has been read.
+#[derive(Default)]
+struct Kept {
+    graph: Option<kuna::Graph>,
+    served: Served,
+}
+
+/// Said with a function's C text that came from the whole-binary export.
+const FROM_CACHE: &str = "from the whole-binary cache: types can differ from a single decompile";
+
 /// `spawn_with` and no options: a worker for the tests.
 #[cfg(test)]
 pub fn spawn(
@@ -69,7 +79,7 @@ pub fn spawn_with(
         if tx.send(Msg::Functions(functions)).is_err() {
             return;
         }
-        let mut graph = None;
+        let mut kept = Kept::default();
         loop {
             let oldest = match requests.recv_timeout(IDLE) {
                 Ok(request) => request,
@@ -78,8 +88,10 @@ pub fn spawn_with(
             };
             for Request { view, address } in newest_per_view(oldest, &requests) {
                 let (options, generation) = shared.current();
-                let answer =
-                    guarded(|| lines_of(&kuna, &binary, view, address, &options, &mut graph));
+                let answer = guarded(|| {
+                    let cache = cache.as_deref();
+                    lines_of(&kuna, &binary, view, address, &options, &mut kept, cache)
+                });
                 let msg = Msg::Code {
                     view,
                     address,
@@ -152,10 +164,19 @@ fn lines_of(
     view: View,
     address: u64,
     options: &Options,
-    graph: &mut Option<kuna::Graph>,
+    kept: &mut Kept,
+    cache: Option<&Cache>,
 ) -> Result<Reply<Vec<String>>, kuna::Error> {
     match view {
-        View::Decompile => decompile_reply(kuna.decompile(binary, address, options)?),
+        View::Decompile => match cached_decompile(cache, kept, address, options) {
+            Some(reply) => Ok(reply),
+            None => {
+                let mut reply = decompile_reply(kuna.decompile(binary, address, options)?)?;
+                let problem = kept.served.problem();
+                reply.notes = join_notes(reply.notes.into_iter().chain(problem), false);
+                Ok(reply)
+            }
+        },
         View::Disassembly => Ok(disassembly_reply(kuna.disassemble(binary, address)?)),
         View::Xrefs => Ok(xrefs_reply(kuna.xrefs(binary, address)?)),
         View::Hex => Ok(hex_reply(kuna.hexdump(binary, address)?)),
@@ -167,7 +188,7 @@ fn lines_of(
         View::Catalog => Ok(catalog_reply(kuna.catalog()?)),
         View::Modes => Ok(modes_reply(kuna.modes()?)),
         View::Docs => docs_reply(kuna, address),
-        View::CallGraph => graph_lines(graph, || kuna.graph(binary, address), address),
+        View::CallGraph => graph_lines(&mut kept.graph, || kuna.graph(binary, address), address),
     }
 }
 
@@ -200,14 +221,34 @@ fn decompile_reply(reply: Reply<Decompiled>) -> Result<Reply<Vec<String>>, kuna:
     let code = data.code.as_ref().ok_or_else(|| {
         kuna::Error::Reported("kuna returned no code for this function".to_string())
     })?;
-    let (lines, cut) = bounded(code.as_str().lines().map(str::to_string));
-    Ok(Reply {
+    Ok(code_reply(code.as_str(), notes))
+}
+
+/// The C text of `address` from the whole-binary export; none sends the request to kuna.
+fn cached_decompile(
+    cache: Option<&Cache>,
+    kept: &mut Kept,
+    address: u64,
+    options: &Options,
+) -> Option<Reply<Vec<String>>> {
+    if !options.is_default() {
+        return None;
+    }
+    let dir = cache?.serving_dir()?;
+    let code = kept.served.function(&dir, address)?;
+    Some(code_reply(&code, [FROM_CACHE.to_string()]))
+}
+
+/// `code` as lines, tabs made wide; `notes` and a cut listing are the reply's notes.
+fn code_reply(code: &str, notes: impl IntoIterator<Item = String>) -> Reply<Vec<String>> {
+    let (lines, cut) = bounded(code.lines().map(str::to_string));
+    Reply {
         data: lines
             .into_iter()
             .map(|line| line.replace('\t', TAB))
             .collect(),
         notes: join_notes(notes, cut),
-    })
+    }
 }
 
 /// A disassembly as `0x201140  PUSH RAX` lines; kuna's notes and a cut listing join the reply's notes.

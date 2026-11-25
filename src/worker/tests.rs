@@ -88,6 +88,73 @@ fn listed_with(cache: &Arc<Cache>) -> Vec<String> {
     names.collect()
 }
 
+/// The decompile answer of `main` from a worker run with `cache` and `shared`.
+fn main_answer(cache: &Arc<Cache>, shared: Arc<Shared>) -> Reply<Vec<String>> {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn_with(
+        Arc::new(pinned_kuna()),
+        hello(),
+        shared,
+        Some(Arc::clone(cache)),
+        queue,
+        tx,
+    )
+    .expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    requests
+        .send(request(View::Decompile, 0x201140))
+        .expect("sends");
+    let Ok(Msg::Code {
+        answer: Ok(reply), ..
+    }) = rx.recv()
+    else {
+        panic!("expected the decompile of main");
+    };
+    drop(requests);
+    worker.join().expect("finishes");
+    reply
+}
+
+/// A cache of hello.elf in `root` whose export is finished and sits in this session's folder.
+fn exported_cache(root: &Path) -> Arc<Cache> {
+    let cache = cache_in(root);
+    let dir = cache.partial_dir();
+    pinned_kuna().export(&hello(), &dir).expect("exports");
+    cache
+}
+
+#[test]
+fn a_function_the_export_has_is_served_from_it_and_says_so() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = exported_cache(scratch.path());
+    let reply = main_answer(&cache, Arc::default());
+    assert_eq!(reply.data[0], "void main(void)", "the export's text");
+    let note = reply.notes.expect("a note");
+    assert!(note.contains("whole-binary cache"), "{note}");
+}
+
+#[test]
+fn with_options_set_the_cache_is_not_used() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = exported_cache(scratch.path());
+    let shared = Arc::new(Shared::default());
+    let options = shared.options().with_option("namestyle", "ghidra");
+    shared.replace(options.expect("a valid option"));
+    let reply = main_answer(&cache, shared);
+    assert_eq!(reply.data[0], "int main(void)", "kuna's per-call text");
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn with_no_export_yet_a_function_is_decompiled_per_call() {
+    let scratch = Scratch::new().expect("a directory");
+    let cache = cache_in(scratch.path());
+    let reply = main_answer(&cache, Arc::default());
+    assert_eq!(reply.data[0], "int main(void)");
+    assert_eq!(reply.notes, None);
+}
+
 #[test]
 fn a_list_that_cannot_be_stored_is_said_and_still_shown() {
     let scratch = Scratch::new().expect("a directory");

@@ -3,6 +3,7 @@
 mod app;
 mod args;
 mod cache;
+mod files;
 mod jumps;
 mod keymap;
 mod kuna;

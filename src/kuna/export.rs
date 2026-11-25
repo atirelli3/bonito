@@ -4,6 +4,7 @@
 
 use super::text::Text;
 use super::{Error, Kuna, Reply, query_args};
+use crate::files::open_regular;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use std::io::Read;
@@ -67,7 +68,7 @@ impl Progress {
     /// The status of the export in `dir`; none when there is no `.streaming` file (not started, or finished).
     pub fn read(dir: &Path) -> Option<Result<Self, String>> {
         let mut text = String::new();
-        let read = fs::File::open(dir.join(STATUS_FILE))
+        let read = open_regular(&dir.join(STATUS_FILE))
             .and_then(|file| file.take(STATUS_LIMIT).read_to_string(&mut text));
         match read {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
@@ -138,7 +139,7 @@ fn summarize(dir: &Path) -> Result<Exported, Error> {
     if dir.join(STATUS_FILE).exists() {
         return Err(unfinished());
     }
-    let file = fs::File::open(dir.join(INDEX_FILE)).map_err(|error| match error.kind() {
+    let file = open_regular(&dir.join(INDEX_FILE)).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => unfinished(),
         _ => Error::Read(error),
     })?;

@@ -2,6 +2,11 @@
 // ponytail: #85 and the tasks after it read these; remove this `allow` when the last of them does.
 #![allow(dead_code)]
 
+mod index;
+
+pub use index::Served;
+
+use crate::files::open_regular;
 use crate::kuna::Function;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
@@ -107,6 +112,19 @@ impl Cache {
         fs::write(dir.join(KEY_FILE), json)
     }
 
+    /// The folder this session's export fills, next to the entry.
+    pub fn partial_dir(&self) -> PathBuf {
+        let mut name = self.entry.clone().into_os_string();
+        name.push(format!(".partial-{}", process::id()));
+        PathBuf::from(name)
+    }
+
+    /// Where the export can be read: the finished entry, else this session's folder while it fills.
+    pub fn serving_dir(&self) -> Option<PathBuf> {
+        let partial = Some(self.partial_dir()).filter(|dir| dir.is_dir());
+        self.complete().map(Path::to_path_buf).or(partial)
+    }
+
     /// The file of the function list, next to the entry.
     fn functions_file(&self) -> PathBuf {
         let mut name = self.entry.clone().into_os_string();
@@ -185,11 +203,10 @@ fn at(path: &Path, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{path:?}: {error}"))
 }
 
-/// The text of the regular file at `path` (a link is not one), if it is at most `limit` bytes.
+/// The text of the regular file at `path`, if it is at most `limit` bytes.
 fn read_capped(path: &Path, limit: u64) -> Option<String> {
-    fs::symlink_metadata(path).ok()?.is_file().then_some(())?;
     let mut text = String::new();
-    let file = fs::File::open(path).ok()?;
+    let file = open_regular(path).ok()?;
     file.take(limit + 1).read_to_string(&mut text).ok()?;
     (text.len() as u64 <= limit).then_some(text)
 }
@@ -632,6 +649,43 @@ mod tests {
         let back = cache.functions().expect("a list");
         assert!(!back[0].name.contains(['\u{1b}', '\u{202e}']));
         assert!(!back[0].aliases[0].contains('\u{1b}'));
+    }
+
+    #[test]
+    fn the_folder_an_export_fills_is_this_sessions_and_next_to_the_entry() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        let partial = cache.partial_dir();
+        assert_eq!(partial.parent(), cache.entry.parent());
+        let name = partial
+            .file_name()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned();
+        let entry = cache
+            .entry
+            .file_name()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(name, format!("{entry}.partial-{}", process::id()));
+    }
+
+    #[test]
+    fn the_export_is_read_from_the_finished_entry_else_from_this_sessions_folder() {
+        let scratch = Scratch::new().expect("a directory");
+        let cache = open(&scratch, "/a/hello.elf");
+        assert_eq!(cache.serving_dir(), None, "no export yet");
+        fs::create_dir(cache.partial_dir()).expect("makes the folder");
+        assert_eq!(cache.serving_dir(), Some(cache.partial_dir()));
+        fs::create_dir(&cache.entry).expect("makes the entry");
+        assert_eq!(
+            cache.serving_dir(),
+            Some(cache.partial_dir()),
+            "no key in the entry yet"
+        );
+        cache.write_key(&cache.entry).expect("writes the key");
+        assert_eq!(cache.serving_dir(), Some(cache.entry.clone()));
     }
 
     #[cfg(unix)]
