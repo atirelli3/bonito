@@ -109,3 +109,29 @@ Facts about the two engines bonito drives, researched 2026-11-24 against kuna v1
 - [WHY] bonito never executes the analysed binary. Only REA's static commands are exposed: `analyze`, `decompile`,
   `function`, `instructions`, `search`, `xrefs`, `trace`, `inspect-*`, `compare*`, `analyze-javascript-application`,
   `providers`, `capabilities`, `doctor`. Never `capture-*`, `debug-with-*`, frida / lldb / adb / browser capture.
+
+## Data and navigation views (#9)
+Verified 2026-11-25 against kuna 1.1005 on `tests/fixtures/{hello,data}.elf` (recorded JSON next to them).
+- [WHY] Keys that may be `null` are still required: `deserialize_with = "Option::deserialize"` (`error`, `stop_reason`,
+  `Op.output`, `fixups_reason`, `entry`, `main`, `section`, `reachable_from_entry`), so a renamed key fails loudly and
+  does not read as "no error". Unknown keys are ignored; counts nobody reads (`fixups`, `unwalked`, `overlaps`) are
+  `Vec<IgnoredAny>`.
+- [WHY] `xrefs --to` has no `--addr` ("unknown option") and kuna reads a name before an address, so a symbol named
+  `0x201120` could answer for another function: `Kuna::xrefs` refuses a reply whose `target.address` differs
+  (`answered_for`). `coverage.decoded` is false for data and unmapped addresses (an empty list there is not "nobody
+  calls it"), `coverage.unwalked` lists code not decoded; `data_refs_coverage` is complete only for `none`,
+  `chained-fixups`, `rebase-opcodes`, `dynamic-relocations`, `base-relocations`: `partial`, `unsupported` and any value
+  bonito does not know are said in the notes.
+- [WHY] `read ADDR --addr` and `raw-pcode ADDR --addr` list the whole function when one starts there. A `read` carries
+  `fixups` (slots the loader rewrites, so the bytes shown are the file's), `fixups_coverage` / `fixups_reason` and
+  `provenance[].source` (`file`, `zero-fill`, `repaired`, `unknown`) + `overlaps`: each is said in the notes.
+- [WHY] `raw-pcode` exits 1 when an instruction does not lift, with `error` an **object** `{address, message}`,
+  `stop_reason: "decode_error"`, `truncated: true` and the part that lifted on stdout (18 instructions at 0x2000b0).
+  `run` drops stdout on exit 1, so the user sees `kuna exited with 1: error: cannot lift instruction at …` and loses the
+  partial listing (`// ponytail:` in `Kuna::pcode`). The `error` / `stop_reason` notes are for an exit 0.
+- [WHY] `strings`, `crypto`, `blobs` carry `scanned`: `sections`, or `segments` when the section table is unusable
+  (no stderr note!). Then "no strings found" may be a packer's data: said in the notes ("unpack first"). A crypto
+  immediate row has `xrefs_count: 0` yet lists its function: use `functions`. `strings` also lists junk fragments of
+  other data (a gzip blob gives `()-JUH`), with no function.
+- [WHY] `functions --summary`: `reachable_from_entry` is `null` with no entry point or a packed image; `warnings` is an
+  array of strings that kuna also prints on stderr (said once); a failure exits 1, so `error` is read only on exit 0.

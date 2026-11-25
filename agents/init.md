@@ -7,7 +7,7 @@ REA as an optional second engine (scope + roadmap below; engine contracts in `ag
 Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newest audit + review, and the board
 (`scripts/task.sh`). Code carries **no rationale**: the *why* is only in `agents/memory/`.
 
-## Status — 2026-11-24
+## Status — 2026-11-25
 - Bootstrap done: crate `bonito` 0.1.0, workflow rules (`CLAUDE.md`), CI (`ci.yml`) and release (`release.yml`)
   pipelines, public repo `atirelli3/bonito` with a `main` ruleset, type labels, Projects board **bonito**
   https://github.com/users/atirelli3/projects/1 (Todo / In Progress / In Review / Done).
@@ -24,6 +24,9 @@ Read first, then `agents/memory/`, the last 3 `agents/handoff/` files, the newes
 - Shutdown hardening done (#59: #63, #64, #65): a stopped kuna call SIGKILLs kuna's process group (Unix,
   `kill_group`); SIGTERM / SIGHUP end the loop cleanly (`signal-hook`, `app::spawn_signals`: terminal restored, kuna
   cancelled, scratch removed); on Windows kuna starts with `CREATE_NO_WINDOW`.
+- Data and navigation views done (#9: #69–#72, branch `feat/9-data-views`): `gr` callers (`xrefs --to`), `gh` hex, `gp` p-code,
+  `gs` strings, `gi` summary, `:crypto`, `:blobs`. Views of the whole binary use address 0 and are titled by the file;
+  an answer that may be incomplete says so in the status line (`agents/memory/kuna.md`, "Data and navigation views").
 - Open: #1 `chore: add a LICENSE` (waits on the user's choice; blocks #18, #19); #66 (kill kuna's process tree on
   Windows: job object).
 
@@ -62,7 +65,7 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 | #4 | record the v1 design (done) |
 | #5 | kuna driver: pin + fetch script, locate, `functions`, `decompile`, `disassemble` (done) |
 | #6 | TUI shell (done) · #7 vim keymap (done) · #8 core views (**MVP**, done) |
-| #9 | xrefs, strings, crypto, blobs, hex, p-code, summary · #10 options (`catalog`, `:set`, `:mode`) |
+| #9 | xrefs, strings, crypto, blobs, hex, p-code, summary (done) · #10 options (`catalog`, `:set`, `:mode`) |
 | #11 | whole-binary cache (`decompile-project --stream`) · #12 call graph · #13 unpack + FID |
 | #14 | REA engine (static-only allow-list) · #15 visual mode + OSC 52 yank |
 | #16 | 6-target release · #17 `install.sh` / `install.ps1` · #18 AUR `bonito-bin` · #19 Nix flake |
@@ -70,7 +73,7 @@ Modules: `main.rs` (thin), `kuna.rs`, `rea.rs`, `app.rs`, `keymap.rs`, `ui.rs`; 
 ## Open work / next steps
 1. #66 (Windows process-tree kill) only when the user wants it: a job object needs `windows-sys` or hand-declared
    kernel32 calls (new `unsafe`).
-2. #9 data and navigation views (plan mode first), then #10, #12, #11. `v0.1.0` only on the user's `release`.
+2. #10 options (`catalog`, `:set`, `:mode`; plan mode first), then #12, #11. `v0.1.0` only on the user's `release`.
 3. #1 LICENSE: none yet. The repo is public, so it is all-rights-reserved until one is chosen (kuna is Apache-2.0).
 4. #18 AUR needs an AUR account and the `AUR_SSH_PRIVATE_KEY` repo secret from the user.
 5. User, in the board UI: Workflows → "Pull request linked to issue" → status **In Review** (the API can't set it).
