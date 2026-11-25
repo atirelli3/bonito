@@ -317,6 +317,118 @@ fn lists_the_functions_of_the_fixture_in_address_order() {
 }
 
 #[test]
+fn the_data_fixture_has_a_string_a_crypto_constant_and_a_blob() {
+    let kuna = real_kuna();
+    let binary = fixture("data.elf");
+    let ask = |subcommand: &str| {
+        let reply = kuna.query::<serde_json::Value>(subcommand, &binary, &[]);
+        let reply = reply.expect("kuna answers");
+        assert_eq!(
+            reply.notes, None,
+            "{subcommand} answered with a degraded load"
+        );
+        assert_eq!(reply.data["error"], serde_json::Value::Null, "{subcommand}");
+        reply.data
+    };
+    let strings = ask("strings");
+    let greeting = strings["strings"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["text"] == "hello from bonito")
+        .expect("the greeting is listed");
+    assert_eq!(greeting["functions"][0]["name"], "say");
+    let crypto = ask("crypto");
+    assert_eq!(crypto["count"], 1);
+    assert_eq!(crypto["constants"][0]["algorithm"], "TEA/XTEA");
+    assert_eq!(crypto["constants"][0]["functions"][0]["name"], "tea_step");
+    let blobs = ask("blobs");
+    assert_eq!(blobs["count"], 1);
+    assert_eq!(blobs["blobs"][0]["kind"], "gzip");
+    assert_eq!(blobs["blobs"][0]["length"], 44);
+    assert_eq!(blobs["blobs"][0]["functions"][0]["name"], "packed");
+}
+
+#[test]
+fn xrefs_to_a_function_list_its_callers() {
+    let reply = real_kuna().xrefs(&fixture("hello.elf"), 0x201120);
+    let reply = reply.expect("answers");
+    assert_eq!(reply.notes, None);
+    let callers: Vec<&str> = reply
+        .data
+        .xrefs
+        .iter()
+        .filter_map(|xref| xref.from_function.as_ref())
+        .map(|function| function.name.as_str())
+        .collect();
+    assert_eq!(callers, ["main", "_start"]);
+}
+
+#[test]
+fn the_hexdump_and_the_pcode_of_a_function_cover_all_of_it() {
+    let kuna = real_kuna();
+    let binary = fixture("hello.elf");
+    let dump = kuna.hexdump(&binary, 0x201140).expect("dumps");
+    assert_eq!(
+        (dump.notes, dump.data.rows.len(), dump.data.end),
+        (None, 2, 0x201160)
+    );
+    let listing = kuna.pcode(&binary, 0x201140).expect("lifts");
+    assert_eq!((listing.notes, listing.data.instructions.len()), (None, 8));
+}
+
+#[test]
+fn the_binary_wide_answers_are_typed_and_clean() {
+    let kuna = real_kuna();
+    let data = fixture("data.elf");
+    let strings = kuna.strings(&data).expect("lists strings");
+    assert_eq!(strings.notes, None);
+    assert!(
+        strings
+            .data
+            .strings
+            .iter()
+            .any(|row| row.text == "hello from bonito")
+    );
+    let crypto = kuna.crypto(&data).expect("lists constants");
+    assert_eq!(crypto.data.constants.len(), 1);
+    let blobs = kuna.blobs(&data).expect("lists blobs");
+    assert_eq!(blobs.data.blobs.len(), 1);
+    let summary = kuna.summary(&fixture("hello.elf")).expect("summarises");
+    assert_eq!((summary.notes, summary.data.total), (None, 4));
+    let entry = summary
+        .data
+        .summary
+        .entry
+        .as_ref()
+        .map(|entry| entry.name.as_str());
+    assert_eq!(entry, Some("_start"));
+}
+
+#[test]
+fn a_summary_that_reports_an_error_is_an_error() {
+    let text = include_str!("../../tests/fixtures/summary-hello.json")
+        .replace(r#""error": null"#, r#""error": "packed image""#);
+    let document = serde_json::from_str::<Summary>(&text).expect("parses");
+    let error = into_summary(document).expect_err("reported");
+    assert!(
+        matches!(&error, Error::Reported(message) if message == "packed image"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn an_xrefs_answer_for_another_address_is_refused() {
+    let document = || {
+        let text = include_str!("../../tests/fixtures/xrefs-square.json");
+        serde_json::from_str::<Xrefs>(text).expect("parses")
+    };
+    assert!(answered_for(document(), 0x201120).is_ok());
+    let error = answered_for(document(), 0x201130).expect_err("another address");
+    assert!(error.to_string().contains("0x201120"), "{error}");
+}
+
+#[test]
 fn a_file_that_is_not_a_binary_is_a_failed_call() {
     let error = real_kuna()
         .functions(&fixture("hello.c"))

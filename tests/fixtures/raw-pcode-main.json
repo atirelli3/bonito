@@ -1,0 +1,430 @@
+{
+  "binary": "tests/fixtures/hello.elf",
+  "kind": "pcode",
+  "target": {
+    "name": "main",
+    "address": 2101568,
+    "address_hex": "0x201140"
+  },
+  "start": 2101568,
+  "start_hex": "0x201140",
+  "end": 2101600,
+  "end_hex": "0x201160",
+  "count": 8,
+  "bytes": 32,
+  "truncated": false,
+  "notes": [],
+  "stop_reason": "range_end",
+  "error": null,
+  "instructions": [
+    {
+      "address": 2101568,
+      "address_hex": "0x201140",
+      "size": 1,
+      "bytes": "50",
+      "mnemonic": "PUSH",
+      "operands": "RAX",
+      "ops": [
+        {
+          "opcode": "COPY",
+          "output": {
+            "space": "unique",
+            "offset": 325888,
+            "offset_hex": "0x4f900",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 0,
+              "offset_hex": "0x0",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "INT_SUB",
+          "output": {
+            "space": "register",
+            "offset": 32,
+            "offset_hex": "0x20",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 32,
+              "offset_hex": "0x20",
+              "size": 8
+            },
+            {
+              "space": "const",
+              "offset": 8,
+              "offset_hex": "0x8",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "STORE",
+          "output": null,
+          "inputs": [
+            {
+              "space": "const",
+              "offset": 3,
+              "offset_hex": "0x3",
+              "size": 8
+            },
+            {
+              "space": "register",
+              "offset": 32,
+              "offset_hex": "0x20",
+              "size": 8
+            },
+            {
+              "space": "unique",
+              "offset": 325888,
+              "offset_hex": "0x4f900",
+              "size": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2101569,
+      "address_hex": "0x201141",
+      "size": 5,
+      "bytes": "bf03000000",
+      "mnemonic": "MOV",
+      "operands": "EDI,0x3",
+      "ops": [
+        {
+          "opcode": "COPY",
+          "output": {
+            "space": "register",
+            "offset": 56,
+            "offset_hex": "0x38",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "const",
+              "offset": 3,
+              "offset_hex": "0x3",
+              "size": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2101574,
+      "address_hex": "0x201146",
+      "size": 5,
+      "bytes": "e8d5ffffff",
+      "mnemonic": "CALL",
+      "operands": "0x201120",
+      "ops": [
+        {
+          "opcode": "INT_SUB",
+          "output": {
+            "space": "register",
+            "offset": 32,
+            "offset_hex": "0x20",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 32,
+              "offset_hex": "0x20",
+              "size": 8
+            },
+            {
+              "space": "const",
+              "offset": 8,
+              "offset_hex": "0x8",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "STORE",
+          "output": null,
+          "inputs": [
+            {
+              "space": "const",
+              "offset": 3,
+              "offset_hex": "0x3",
+              "size": 8
+            },
+            {
+              "space": "register",
+              "offset": 32,
+              "offset_hex": "0x20",
+              "size": 8
+            },
+            {
+              "space": "const",
+              "offset": 2101579,
+              "offset_hex": "0x20114b",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "CALL",
+          "output": null,
+          "inputs": [
+            {
+              "space": "ram",
+              "offset": 2101536,
+              "offset_hex": "0x201120",
+              "size": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2101579,
+      "address_hex": "0x20114b",
+      "size": 2,
+      "bytes": "89c7",
+      "mnemonic": "MOV",
+      "operands": "EDI,EAX",
+      "ops": [
+        {
+          "opcode": "COPY",
+          "output": {
+            "space": "register",
+            "offset": 56,
+            "offset_hex": "0x38",
+            "size": 4
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 0,
+              "offset_hex": "0x0",
+              "size": 4
+            }
+          ]
+        },
+        {
+          "opcode": "INT_ZEXT",
+          "output": {
+            "space": "register",
+            "offset": 56,
+            "offset_hex": "0x38",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 56,
+              "offset_hex": "0x38",
+              "size": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2101581,
+      "address_hex": "0x20114d",
+      "size": 5,
+      "bytes": "be04000000",
+      "mnemonic": "MOV",
+      "operands": "ESI,0x4",
+      "ops": [
+        {
+          "opcode": "COPY",
+          "output": {
+            "space": "register",
+            "offset": 48,
+            "offset_hex": "0x30",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "const",
+              "offset": 4,
+              "offset_hex": "0x4",
+              "size": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2101586,
+      "address_hex": "0x201152",
+      "size": 1,
+      "bytes": "58",
+      "mnemonic": "POP",
+      "operands": "RAX",
+      "ops": [
+        {
+          "opcode": "COPY",
+          "output": {
+            "space": "unique",
+            "offset": 700160,
+            "offset_hex": "0xaaf00",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "const",
+              "offset": 0,
+              "offset_hex": "0x0",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "LOAD",
+          "output": {
+            "space": "unique",
+            "offset": 700160,
+            "offset_hex": "0xaaf00",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "const",
+              "offset": 3,
+              "offset_hex": "0x3",
+              "size": 8
+            },
+            {
+              "space": "register",
+              "offset": 32,
+              "offset_hex": "0x20",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "INT_ADD",
+          "output": {
+            "space": "register",
+            "offset": 32,
+            "offset_hex": "0x20",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 32,
+              "offset_hex": "0x20",
+              "size": 8
+            },
+            {
+              "space": "const",
+              "offset": 8,
+              "offset_hex": "0x8",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "COPY",
+          "output": {
+            "space": "register",
+            "offset": 0,
+            "offset_hex": "0x0",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "unique",
+              "offset": 700160,
+              "offset_hex": "0xaaf00",
+              "size": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2101587,
+      "address_hex": "0x201153",
+      "size": 5,
+      "bytes": "e9d8ffffff",
+      "mnemonic": "JMP",
+      "operands": "0x201130",
+      "ops": [
+        {
+          "opcode": "BRANCH",
+          "output": null,
+          "inputs": [
+            {
+              "space": "ram",
+              "offset": 2101552,
+              "offset_hex": "0x201130",
+              "size": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2101592,
+      "address_hex": "0x201158",
+      "size": 8,
+      "bytes": "0f1f840000000000",
+      "mnemonic": "NOP",
+      "operands": "dword ptr [RAX + RAX*0x1]",
+      "ops": [
+        {
+          "opcode": "INT_MULT",
+          "output": {
+            "space": "unique",
+            "offset": 43776,
+            "offset_hex": "0xab00",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 0,
+              "offset_hex": "0x0",
+              "size": 8
+            },
+            {
+              "space": "const",
+              "offset": 1,
+              "offset_hex": "0x1",
+              "size": 8
+            }
+          ]
+        },
+        {
+          "opcode": "INT_ADD",
+          "output": {
+            "space": "unique",
+            "offset": 44288,
+            "offset_hex": "0xad00",
+            "size": 8
+          },
+          "inputs": [
+            {
+              "space": "register",
+              "offset": 0,
+              "offset_hex": "0x0",
+              "size": 8
+            },
+            {
+              "space": "unique",
+              "offset": 43776,
+              "offset_hex": "0xab00",
+              "size": 8
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

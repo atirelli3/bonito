@@ -18,8 +18,11 @@ mod text;
 
 use scratch::Scratch;
 
-pub use json::{Decompiled, Disassembly, Function};
-pub use text::{is_unsafe, single_line};
+pub use json::{
+    Blobs, Crypto, Decompiled, Disassembly, Function, Hexdump, Located, Op, Pcode, Strings,
+    Summary, Varnode, Xrefs,
+};
+pub use text::{Text, is_unsafe, single_line};
 
 /// The kuna binary's file name on this platform.
 const KUNA_EXE: &str = if cfg!(windows) { "kuna.exe" } else { "kuna" };
@@ -304,6 +307,48 @@ impl Kuna {
         )
     }
 
+    /// The text kuna finds in the image, with the functions that use it.
+    pub fn strings(&self, binary: &Path) -> Result<Reply<Strings>, Error> {
+        self.query("strings", binary, &[])
+    }
+
+    /// The well-known crypto constants in the image, with the functions that use them.
+    pub fn crypto(&self, binary: &Path) -> Result<Reply<Crypto>, Error> {
+        self.query("crypto", binary, &[])
+    }
+
+    /// The whole image and archive files stored in the image, with the functions that use them.
+    pub fn blobs(&self, binary: &Path) -> Result<Reply<Blobs>, Error> {
+        self.query("blobs", binary, &[])
+    }
+
+    /// Where to start: the entry point, the counts, the largest functions and the loader's warnings.
+    pub fn summary(&self, binary: &Path) -> Result<Reply<Summary>, Error> {
+        self.query("functions", binary, &["--summary"])?
+            .try_map(into_summary)
+    }
+
+    /// The bytes of the function at `address` (64 bytes when none starts there), sixteen to a row.
+    pub fn hexdump(&self, binary: &Path, address: u64) -> Result<Reply<Hexdump>, Error> {
+        let target = hex(address);
+        self.query("read", binary, &[target.as_str(), "--addr"])
+    }
+
+    /// The p-code of each instruction of the function at `address`, before any decompiler pass.
+    // ponytail: kuna exits 1 when an instruction does not lift and the partial listing on its stdout is dropped; the
+    // error shows kuna's stderr. Accept exit 1 with a parsable stdout if users want the part that lifted.
+    pub fn pcode(&self, binary: &Path, address: u64) -> Result<Reply<Pcode>, Error> {
+        let target = hex(address);
+        self.query("raw-pcode", binary, &[target.as_str(), "--addr"])
+    }
+
+    /// The references to the function at `address`: its callers, and the stored pointers that hold its address.
+    pub fn xrefs(&self, binary: &Path, address: u64) -> Result<Reply<Xrefs>, Error> {
+        let target = hex(address);
+        self.query("xrefs", binary, &["--to", target.as_str()])?
+            .try_map(|document| answered_for(document, address))
+    }
+
     /// Runs `kuna <subcommand> <binary> <extra..> --json` and parses the document.
     fn query<T: DeserializeOwned>(
         &self,
@@ -402,6 +447,26 @@ fn query_args(subcommand: &str, binary: &Path, extra: &[&str]) -> Result<Vec<OsS
 /// An address the way kuna reads it: `0x201140`.
 fn hex(address: u64) -> String {
     format!("{address:#x}")
+}
+
+/// `document`, or the problem kuna reported for it.
+fn into_summary(document: Summary) -> Result<Summary, Error> {
+    match document.error {
+        Some(message) => Err(Error::Reported(printable(message.as_bytes()))),
+        None => Ok(document),
+    }
+}
+
+/// `document` if it is about `address`. `xrefs` has no `--addr`, and kuna reads a name before an address, so a
+/// symbol in the binary named like the address could make it answer for another one.
+fn answered_for(document: Xrefs, address: u64) -> Result<Xrefs, Error> {
+    if document.target.address == address {
+        return Ok(document);
+    }
+    Err(Error::Reported(format!(
+        "kuna answered for {:#x}, not {address:#x}",
+        document.target.address
+    )))
 }
 
 /// The one function of a `decompile` document, or the problem kuna reported for the document or the function.

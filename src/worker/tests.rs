@@ -126,7 +126,9 @@ fn an_idle_worker_ends_once_kuna_is_cancelled_even_while_a_sender_lives() {
 fn a_view_kuna_cannot_give_yet_is_an_error_not_silence() {
     let (tx, rx) = mpsc::channel();
     let (requests, queue) = mpsc::channel();
-    requests.send(request(View::Hex, 0x201140)).expect("sends");
+    requests
+        .send(request(View::CallGraph, 0x201140))
+        .expect("sends");
     drop(requests);
     spawn(Arc::new(pinned_kuna()), hello(), queue, tx)
         .expect("spawns")
@@ -134,14 +136,559 @@ fn a_view_kuna_cannot_give_yet_is_an_error_not_silence() {
         .expect("finishes");
     assert!(matches!(rx.recv(), Ok(Msg::Functions(_))));
     let Ok(Msg::Code {
-        view: View::Hex,
+        view: View::CallGraph,
         answer: Err(kuna::Error::Reported(message)),
         ..
     }) = rx.recv()
     else {
-        panic!("expected an error answer for the Hex view");
+        panic!("expected an error answer for the CallGraph view");
     };
-    assert!(message.contains("Hex"), "{message}");
+    assert!(message.contains("CallGraph"), "{message}");
+}
+
+fn xrefs_of(text: &str) -> Reply<Vec<String>> {
+    let document: kuna::Xrefs = serde_json::from_str(text).expect("parses");
+    xrefs_reply(Reply {
+        data: document,
+        notes: None,
+    })
+}
+
+#[test]
+fn xrefs_are_one_line_per_reference_with_the_instruction() {
+    let reply = xrefs_of(include_str!("../../tests/fixtures/xrefs-square.json"));
+    assert_eq!(
+        reply.data,
+        [
+            "0x201146  call  main  CALL 0x201120",
+            "0x201166  call  _start  CALL 0x201120"
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn a_function_nobody_references_says_so() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"orphan","address":16},"coverage":{"decoded":true,"notes":[]},
+        "data_refs_coverage":"none","xrefs":[],"data_refs":[]}"#,
+    );
+    assert_eq!(reply.data, ["no references to orphan"]);
+}
+
+#[test]
+fn stored_pointers_are_listed_and_partial_coverage_is_said() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":["not decoded"]},
+        "data_refs_coverage":"partial","data_refs_reason":"some relocations unreadable",
+        "xrefs":[{"from_address":32,"kind":"call","instruction":"CALL 0x10","from_function":null}],
+        "data_refs":[{"kind":"pointer","from_address":4096,"from_name":null}]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["0x20  call  ?  CALL 0x10", "0x1000  pointer  ?"]
+    );
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("not decoded · stored pointers partial: some relocations unreadable")
+    );
+}
+
+#[test]
+fn only_an_incomplete_pointer_list_is_said() {
+    let notes = |coverage: &str| {
+        let text = format!(
+            r#"{{"target":{{"name":"f","address":16}},"coverage":{{"decoded":true,"notes":[]}},
+            "data_refs_coverage":"{coverage}","data_refs_reason":"why","xrefs":[],"data_refs":[]}}"#
+        );
+        xrefs_of(&text).notes
+    };
+    assert_eq!(
+        notes("unsupported").as_deref(),
+        Some("stored pointers unsupported: why")
+    );
+    assert_eq!(notes("none"), None);
+    assert_eq!(notes("dynamic-relocations"), None);
+    assert_eq!(
+        notes("novel").as_deref(),
+        Some("stored pointers novel: why")
+    );
+}
+
+/// The reply for a target with `coverage` (the JSON of the `coverage` object) and no references.
+fn empty_xrefs(target: &str, coverage: &str) -> Reply<Vec<String>> {
+    xrefs_of(&format!(
+        r#"{{"target":{target},"coverage":{coverage},"data_refs_coverage":"none","xrefs":[],"data_refs":[]}}"#
+    ))
+}
+
+#[test]
+fn a_target_kuna_did_not_decode_is_not_reported_as_unreferenced() {
+    let reply = empty_xrefs(
+        r#"{"name":null,"address":0}"#,
+        r#"{"decoded":false,"notes":[]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["no references found to 0x0 (see the status line)"]
+    );
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("the target was not decoded: no code reference can be found")
+    );
+}
+
+#[test]
+fn code_kuna_did_not_walk_is_said_because_callers_may_be_missing() {
+    let reply = empty_xrefs(
+        r#"{"name":"f","address":16}"#,
+        r#"{"decoded":true,"unwalked":[{"a":1},"b"],"notes":[]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["no references found to f (see the status line)"]
+    );
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("2 regions were not decoded: references may be missing")
+    );
+}
+
+#[test]
+fn an_empty_answer_with_a_short_pointer_list_is_not_reported_as_unreferenced() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":[]},
+        "data_refs_coverage":"partial","xrefs":[],"data_refs":[]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["no references found to f (see the status line)"]
+    );
+}
+
+#[test]
+fn a_nameless_target_is_named_by_its_address() {
+    let reply = empty_xrefs(
+        r#"{"name":null,"address":16}"#,
+        r#"{"decoded":true,"notes":[]}"#,
+    );
+    assert_eq!(reply.data, ["no references to 0x10"]);
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn a_short_pointer_list_without_a_reason_is_still_said() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":[]},
+        "data_refs_coverage":"partial","xrefs":[],"data_refs":[]}"#,
+    );
+    assert_eq!(reply.notes.as_deref(), Some("stored pointers partial"));
+}
+
+#[test]
+fn a_coverage_note_kuna_also_printed_on_stderr_is_said_once() {
+    let document: kuna::Xrefs = serde_json::from_str(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":["no walk"]},
+        "data_refs_coverage":"none","xrefs":[],"data_refs":[]}"#,
+    )
+    .expect("parses");
+    let reply = xrefs_reply(Reply {
+        data: document,
+        notes: Some("no walk".to_string()),
+    });
+    assert_eq!(reply.notes.as_deref(), Some("no walk"));
+}
+
+#[test]
+fn a_flood_of_notes_is_capped() {
+    let joined = join_notes((0..1000).map(|n| format!("note {n}")), false).expect("notes");
+    assert!(
+        joined.contains("note 9") && !joined.contains("note 10 "),
+        "{joined}"
+    );
+    assert!(joined.contains("more than 10 notes"), "{joined}");
+    assert!(joined.len() < 500, "{} bytes", joined.len());
+}
+
+fn hex_of(text: &str) -> Reply<Vec<String>> {
+    let dump: kuna::Hexdump = serde_json::from_str(text).expect("parses");
+    hex_reply(Reply {
+        data: dump,
+        notes: None,
+    })
+}
+
+fn pcode_of(text: &str) -> Reply<Vec<String>> {
+    let listing: kuna::Pcode = serde_json::from_str(text).expect("parses");
+    pcode_reply(Reply {
+        data: listing,
+        notes: None,
+    })
+}
+
+#[test]
+fn a_hexdump_is_one_line_per_row_with_spaced_bytes_and_the_text() {
+    let reply = hex_of(include_str!("../../tests/fixtures/read-main.json"));
+    assert_eq!(
+        reply.data,
+        [
+            "0x201140  50 bf 03 00 00 00 e8 d5 ff ff ff 89 c7 be 04 00  P...............",
+            "0x201150  00 00 58 e9 d8 ff ff ff 0f 1f 84 00 00 00 00 00  ..X............."
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+/// The metadata of a hexdump whose bytes are the file's, untouched.
+const CLEAN: &str = r#""fixups_coverage":"dynamic-relocations","fixups_reason":null,"fixups":[],
+    "provenance":[{"source":"file","overlaps":[]}]"#;
+
+/// A hexdump document of function `f` at 0x10 that ends at 0x20, with `rows` and `metadata` (JSON members).
+fn dump(truncated: bool, notes: &str, rows: &str, metadata: &str) -> String {
+    format!(
+        r#"{{"target":{{"name":"f","address":16}},"end":32,"truncated":{truncated},"notes":{notes},
+        "rows":{rows},{metadata}}}"#
+    )
+}
+
+const ABC: &str = r#"[{"address":16,"bytes":"414243","ascii":"ABC"}]"#;
+
+#[test]
+fn a_short_last_row_keeps_the_text_aligned() {
+    let reply = hex_of(&dump(false, "[]", ABC, CLEAN));
+    assert_eq!(reply.data, [format!("0x10  {:<47}  ABC", "41 42 43")]);
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn a_cut_hexdump_says_where_it_stops() {
+    let reply = hex_of(&dump(true, r#"["partial"]"#, ABC, CLEAN));
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("partial · the dump stops at 0x20")
+    );
+}
+
+#[test]
+fn hex_digits_and_text_that_are_not_are_shown_as_dots() {
+    let rows = r#"[{"address":16,"bytes":"4g","ascii":"Aé"}]"#;
+    let reply = hex_of(&dump(false, "[]", rows, CLEAN));
+    assert_eq!(reply.data, [format!("0x10  {:<47}  A.", "4.")]);
+}
+
+#[test]
+fn a_dump_with_no_rows_says_so() {
+    let reply = hex_of(&dump(false, "[]", "[]", CLEAN));
+    assert_eq!(reply.data, ["no bytes at 0x10"]);
+}
+
+#[test]
+fn bytes_the_loader_changes_or_that_are_not_the_files_are_said() {
+    let said = |metadata: &str| hex_of(&dump(false, "[]", ABC, metadata)).notes;
+    let fixed = r#""fixups_coverage":"dynamic-relocations","fixups_reason":null,
+        "fixups":[{"address":16}],"provenance":[{"source":"file","overlaps":[]}]"#;
+    assert_eq!(
+        said(fixed).as_deref(),
+        Some("1 load-time fixups lie in these bytes: the loader changes them")
+    );
+    let partial = r#""fixups_coverage":"partial","fixups_reason":"some relocations unreadable",
+        "fixups":[],"provenance":[{"source":"file","overlaps":[]}]"#;
+    assert_eq!(
+        said(partial).as_deref(),
+        Some("fixups partial: some relocations unreadable")
+    );
+    let zero = r#""fixups_coverage":"none","fixups_reason":null,"fixups":[],
+        "provenance":[{"source":"zero-fill","overlaps":[]},{"source":"file","overlaps":[{"index":1}]}]"#;
+    assert_eq!(
+        said(zero).as_deref(),
+        Some("some bytes are zero-fill, not file content · segments overlap here")
+    );
+}
+
+#[test]
+fn p_code_is_the_instruction_then_one_indented_line_per_operation() {
+    let reply = pcode_of(include_str!("../../tests/fixtures/raw-pcode-main.json"));
+    assert_eq!(
+        reply.data[..4],
+        [
+            "0x201140  PUSH RAX",
+            "    (unique, 0x4f900, 8) = COPY (register, 0x0, 8)",
+            "    (register, 0x20, 8) = INT_SUB (register, 0x20, 8), (const, 0x8, 8)",
+            "    STORE (const, 0x3, 8), (register, 0x20, 8), (unique, 0x4f900, 8)"
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn an_operation_with_no_output_and_no_inputs_has_no_trailing_space() {
+    let reply = pcode_of(
+        r#"{"target":{"name":"f","address":16},"end":17,"truncated":false,"notes":[],
+        "stop_reason":"range_end","error":null,
+        "instructions":[{"address":16,"mnemonic":"RET","operands":"",
+        "ops":[{"opcode":"RETURN","output":null,"inputs":[]}]}]}"#,
+    );
+    assert_eq!(reply.data, ["0x10  RET", "    RETURN"]);
+}
+
+#[test]
+fn a_listing_with_no_instructions_says_so() {
+    let reply = pcode_of(
+        r#"{"target":{"name":"f","address":16},"end":16,"truncated":false,"notes":[],
+        "stop_reason":"range_end","error":null,"instructions":[]}"#,
+    );
+    assert_eq!(reply.data, ["no instructions at 0x10"]);
+}
+
+#[test]
+fn a_lift_that_stopped_early_says_why() {
+    let reply = pcode_of(
+        r#"{"target":{"name":"f","address":16},"end":32,"truncated":false,"notes":[],
+        "stop_reason":"decode_error","error":{"address":24,"message":"bad opcode at 0x18"},
+        "instructions":[{"address":16,"mnemonic":"NOP","operands":"","ops":[]}]}"#,
+    );
+    assert_eq!(reply.data, ["0x10  NOP"]);
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("the lift stops: decode_error · bad opcode at 0x18")
+    );
+}
+
+#[test]
+fn the_worker_answers_hex_and_p_code_on_request() {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn(Arc::new(pinned_kuna()), hello(), queue, tx).expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    requests.send(request(View::Hex, 0x201140)).expect("sends");
+    let dump = next_lines(&rx, View::Hex, 0x201140);
+    assert_eq!(dump.len(), 2, "{dump:?}");
+    assert!(dump[0].starts_with("0x201140  50 bf 03"), "{dump:?}");
+    requests
+        .send(request(View::PCode, 0x201140))
+        .expect("sends");
+    let lifted = next_lines(&rx, View::PCode, 0x201140);
+    assert_eq!(lifted[0], "0x201140  PUSH RAX", "{lifted:?}");
+    drop(requests);
+    worker.join().expect("ends when nobody can ask any more");
+}
+
+fn data() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data.elf")
+}
+
+fn plain<T>(data: T) -> Reply<T> {
+    Reply { data, notes: None }
+}
+
+const STRINGS: &str = include_str!("../../tests/fixtures/strings-data.json");
+const CRYPTO: &str = include_str!("../../tests/fixtures/crypto-data.json");
+const BLOBS: &str = include_str!("../../tests/fixtures/blobs-data.json");
+const SUMMARY: &str = include_str!("../../tests/fixtures/summary-hello.json");
+
+#[test]
+fn strings_crypto_and_blobs_are_one_line_per_row_with_the_functions_that_use_them() {
+    let strings = serde_json::from_str(STRINGS).expect("parses");
+    assert_eq!(
+        strings_reply(plain(strings)).data,
+        [
+            "0x200120  .rodata  hello from bonito  ← say",
+            "0x200154  .rodata  ()-JUH"
+        ]
+    );
+    let crypto = serde_json::from_str(CRYPTO).expect("parses");
+    assert_eq!(
+        crypto_reply(plain(crypto)).data,
+        [
+            "0x201192  .text  TEA/XTEA  delta 0x9E3779B9 (golden ratio; also RC5/RC6 Q32)  ← tea_step"
+        ]
+    );
+    let blobs = serde_json::from_str(BLOBS).expect("parses");
+    assert_eq!(
+        blobs_reply(plain(blobs)).data,
+        ["0x200140  .rodata  gzip  44 bytes  ← packed"]
+    );
+}
+
+#[test]
+fn a_string_used_by_many_functions_lists_five_and_counts_the_rest() {
+    let users: Vec<String> = (1..=7)
+        .map(|n| format!(r#"{{"name":"f{n}","address":{n}}}"#))
+        .collect();
+    let text = format!(
+        r#"{{"scanned":"sections","strings":[{{"address":16,"text":"x","section":null,"functions":[{}]}}]}}"#,
+        users.join(",")
+    );
+    let strings = serde_json::from_str(&text).expect("parses");
+    assert_eq!(
+        strings_reply(plain(strings)).data,
+        ["0x10  ?  x  ← f1, f2, f3, f4, f5, …+2"]
+    );
+}
+
+#[test]
+fn a_binary_with_none_of_a_kind_says_so() {
+    let none = |key: &str| format!(r#"{{"scanned":"sections","{key}":[]}}"#);
+    let strings = serde_json::from_str(&none("strings")).expect("parses");
+    assert_eq!(strings_reply(plain(strings)).data, ["no strings found"]);
+    let crypto = serde_json::from_str(&none("constants")).expect("parses");
+    assert_eq!(
+        crypto_reply(plain(crypto)).data,
+        ["no crypto constants found"]
+    );
+    let blobs = serde_json::from_str(&none("blobs")).expect("parses");
+    assert_eq!(blobs_reply(plain(blobs)).data, ["no embedded files found"]);
+}
+
+#[test]
+fn the_summary_lists_the_entry_the_counts_and_the_largest_functions() {
+    let summary = serde_json::from_str(SUMMARY).expect("parses");
+    let reply = summary_reply(plain(summary));
+    assert_eq!(
+        reply.data,
+        [
+            "entry: _start  0x201160",
+            "main: main  0x201140",
+            "functions: 4 (3 reachable from the entry, 2 with no callers)",
+            "code: 98 bytes",
+            "sizes: 16-63 bytes ×4",
+            "",
+            "largest functions:",
+            "  0x201160  34  _start",
+            "  0x201140  32  main",
+            "  0x201120  16  square",
+            "  0x201130  16  add"
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn loader_repairs_lead_the_summary_and_reach_the_status_line() {
+    let text = SUMMARY.replace(
+        r#""warnings": []"#,
+        r#""warnings": ["ELF section table unusable"]"#,
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    let reply = summary_reply(plain(summary));
+    assert_eq!(reply.data[0], "warning: ELF section table unusable");
+    assert_eq!(reply.notes.as_deref(), Some("ELF section table unusable"));
+}
+
+#[test]
+fn a_summary_without_an_entry_point_says_none() {
+    let text = SUMMARY.replace(r#""entry": {"#, r#""entry": null, "was_entry": {"#);
+    let summary = serde_json::from_str(&text).expect("parses");
+    assert_eq!(summary_reply(plain(summary)).data[0], "entry: none");
+}
+
+#[test]
+fn a_scan_by_segments_is_said_because_the_section_table_was_unusable() {
+    let said = |key: &str, scanned: &str| {
+        let text = format!(r#"{{"scanned":"{scanned}","{key}":[]}}"#);
+        match key {
+            "strings" => strings_reply(plain(serde_json::from_str(&text).expect("parses"))).notes,
+            "constants" => crypto_reply(plain(serde_json::from_str(&text).expect("parses"))).notes,
+            _ => blobs_reply(plain(serde_json::from_str(&text).expect("parses"))).notes,
+        }
+    };
+    for key in ["strings", "constants", "blobs"] {
+        assert_eq!(said(key, "sections"), None, "{key}");
+        let note = said(key, "segments").expect("a note");
+        assert!(
+            note.contains("segments") && note.contains("unpack"),
+            "{key}: {note}"
+        );
+    }
+}
+
+#[test]
+fn a_summary_of_an_image_without_an_entry_point_still_shows() {
+    let text = SUMMARY.replace(
+        r#""reachable_from_entry": 3"#,
+        r#""reachable_from_entry": null"#,
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    assert_eq!(
+        summary_reply(plain(summary)).data[2],
+        "functions: 4 (reachable from the entry: unknown, 2 with no callers)"
+    );
+}
+
+#[test]
+fn a_summary_with_no_size_buckets_says_none() {
+    let text = SUMMARY.replace(r#""count": 4"#, r#""count": 0"#);
+    let summary = serde_json::from_str(&text).expect("parses");
+    assert_eq!(summary_reply(plain(summary)).data[4], "sizes: none");
+}
+
+#[test]
+fn a_warning_kuna_also_printed_on_stderr_is_said_once_and_a_flood_is_capped() {
+    let text = SUMMARY.replace(
+        r#""warnings": []"#,
+        r#""warnings": ["ELF section table unusable"]"#,
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    let reply = summary_reply(Reply {
+        data: summary,
+        notes: Some("ELF section table unusable".to_string()),
+    });
+    assert_eq!(reply.notes.as_deref(), Some("ELF section table unusable"));
+    let many: Vec<String> = (0..50).map(|n| format!(r#""repair {n}""#)).collect();
+    let text = SUMMARY.replace(
+        r#""warnings": []"#,
+        &format!(r#""warnings": [{}]"#, many.join(",")),
+    );
+    let summary = serde_json::from_str(&text).expect("parses");
+    let lines = summary_reply(plain(summary)).data;
+    let warnings = lines
+        .iter()
+        .filter(|line| line.starts_with("warning: "))
+        .count();
+    assert_eq!(warnings, MAX_NOTES);
+    assert!(
+        lines.iter().any(|line| line.starts_with("entry: ")),
+        "the overview survives"
+    );
+}
+
+#[test]
+fn the_worker_answers_the_binary_wide_views_at_address_zero() {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn(Arc::new(pinned_kuna()), data(), queue, tx).expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    for (view, expected) in [
+        (View::Strings, "0x200120  .rodata  hello from bonito  ← say"),
+        (View::Crypto, "0x201192  .text  TEA/XTEA"),
+        (View::Blobs, "0x200140  .rodata  gzip  44 bytes  ← packed"),
+        (View::Summary, "entry: _start  0x2011a0"),
+    ] {
+        requests.send(request(view, 0)).expect("sends");
+        let lines = next_lines(&rx, view, 0);
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "{view:?}: {lines:?}"
+        );
+    }
+    drop(requests);
+    worker.join().expect("ends when nobody can ask any more");
+}
+
+#[test]
+fn the_worker_lists_the_callers_of_a_function_on_request() {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn(Arc::new(pinned_kuna()), hello(), queue, tx).expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    requests
+        .send(request(View::Xrefs, 0x201120))
+        .expect("sends");
+    let lines = next_lines(&rx, View::Xrefs, 0x201120);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].ends_with("main  CALL 0x201120"), "{lines:?}");
+    drop(requests);
+    worker.join().expect("ends when nobody can ask any more");
 }
 
 #[test]

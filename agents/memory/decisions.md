@@ -154,3 +154,24 @@ fact the code doesn't say.
   to `/dev/tty`). `tests/smoke.rs` covers every path that ends before `try_init`; the screen itself is covered by
   `TestBackend` tests, and a change to the live path is also run by hand on a pty (strip CSI before matching: ratatui
   redraws only the cells that changed, so a string can arrive in pieces).
+
+## Data and navigation views (#9: `gr gh gp gs gi`, `:crypto`, `:blobs`)
+- [USER-YES] (2026-11-25) The xrefs view (`gr`) shows the callers only (`xrefs --to`): one kuna call (each reloads the
+  image); callees are in decompile and disassembly, where Enter follows them.
+- [WHY] Strings, crypto, blobs and summary are views of the whole binary: requested at `address: 0`, titled by the file
+  name (cleaned), cached like any view. `app::per_function` is an exhaustive `match`, so a new view must say which it
+  is. `gd ga gr gh gp` from such a view take the list's selected function (the title says which); Enter on a function
+  name in it opens that function's decompile view. `gs` and `gi` are keys, `crypto` and `blobs` are `:` commands.
+- [WHY] An answer that may be incomplete never says "no references": an undecoded target, unwalked code and a short
+  pointer list make `xrefs_reply` say "no references found … (see the status line)". A missing caller is worse than none.
+- [WHY] Notes are capped once, in `join_notes` (`MAX_NOTES` = 10, then "more than 10 notes"): `coverage.notes`,
+  `warnings` and `unwalked` come from the binary and every frame copies the status line. The summary pane shows at
+  most `MAX_NOTES` warnings so the overview is never pushed off. A note kuna also printed on stderr is said once.
+- [WHY] Text from the binary is cleaned twice for hex: `Text` while parsing, then the hex digits and the text column
+  are forced to `[0-9a-f]` and printable ASCII (`dotted`), or a wide character misaligns the column.
+- [KEPT] Review findings left as they are: peak memory of a hostile 64 MiB answer is a few times its size before
+  `bounded` (same shape as decompile and disassembly); the `←` in a strings row can be forged by a string ending in
+  `  ← main`; `Text` cuts at 1024 characters without a marker; `Kuna::hexdump` / `pcode` check no `target.address` (they
+  pass `--addr`, so a symbol cannot redirect them); the xrefs `count`, strings `xrefs` flag and the summary `runtime`
+  / `limits` are not read; `rows_reply` is not shared with `hex_reply` / `xrefs_reply`; `gd` from a binary-wide view
+  does not take the word under the cursor.

@@ -52,6 +52,8 @@ pub enum View {
     Disassembly,
     Xrefs,
     Strings,
+    Crypto,
+    Blobs,
     CallGraph,
     Hex,
     PCode,

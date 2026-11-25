@@ -1,0 +1,29 @@
+{
+  "binary": "tests/fixtures/data.elf",
+  "algorithm": null,
+  "section": null,
+  "scanned": "sections",
+  "xrefs": true,
+  "count": 1,
+  "constants": [
+    {
+      "address": 2101650,
+      "address_hex": "0x201192",
+      "algorithm": "TEA/XTEA",
+      "name": "delta 0x9E3779B9 (golden ratio; also RC5/RC6 Q32)",
+      "kind": "immediate",
+      "layout": "u32le",
+      "byte_length": 4,
+      "section": ".text",
+      "text": null,
+      "xrefs_count": 0,
+      "functions": [
+        {
+          "name": "tea_step",
+          "address": 2101648,
+          "address_hex": "0x201190"
+        }
+      ]
+    }
+  ]
+}
