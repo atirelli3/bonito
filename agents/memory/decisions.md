@@ -199,3 +199,27 @@ fact the code doesn't say.
   few times its size before `bounded`; `:docs TOPIC` sends the topic's number and the worker lists the topics again to find
   its name (they differ only if kuna is replaced mid-session); the `named(...)` call sites of `Kuna::reference` have no test
   that fails one command (the wrapper is tested); `:set NAME` echoes the checked name only.
+
+## Call graph (#12: `gc`)
+- [USER-YES] (2026-11-25) The view is the full tree, like cflow: the function, then its callers upward and its callees
+  downward, every level. A function is expanded once per direction and shown again as `(above)`; callees in call order,
+  callers by address. Enter on a row re-centres the view on that function (a view per function, cached like the rest).
+- [WHY] An empty list says `none direct` and the status line says calls through pointers are not edges: the graph holds
+  static references only, and a missing caller is worse than none (as `xrefs_reply`). Rows tag a jump or data edge,
+  `entry`, a thunk or import, and `indirect calls`.
+- [WHY] A hostile graph is bounded three ways, all tested: the walk keeps its own stack (a 100 000-deep chain overflows a
+  recursive one, and an overflow aborts, `guarded` cannot catch it); indentation stops at 40 levels (one step per level
+  costs gigabytes) and the status line says so; rows stop at 16 MiB, because an `(above)` row repeats a node's whole
+  name and ~8 MB of duplicate edges would become ~800 MB of lines before `bounded` cut them. One row past `MAX_LINES`
+  is built so `bounded` reports the cut.
+- [WHY] Enter in the graph follows the `0x…` on the row, not the word under the cursor: a name with punctuation
+  (`puts@plt`) is cut at the `@`, and a thunk and its import share a name. A row without an address says "no function
+  on this line". The loading text says "loading the call graph of X…": the one load can be slow on a large binary.
+- [REJECTED] (2026-11-25) Showing the per-node `error` of the one decompile kuna runs on the way: edges are identical
+  with or without it (hello 4 / 4, `/bin/ls` 306 each way), and a 1-second budget that runs out is expected. Also not
+  read: `forwardsTo`, the header counts.
+- [KEPT] Left as they are: the load runs on the one worker, so a slow graph holds every other view for that long (same as
+  any kuna call; Failed is retried on `gc`); the load's stderr notes are lost when the first request names an address
+  the graph lacks; Enter on an import or thunk that `kuna functions` does not list says "no function: 0x…"; `tree`
+  rebuilds its index per request, O(E log E); the address on a row can be forged by a name holding `0x…` (Enter then
+  opens another listed function); a binary rebuilt on disk is not re-read.

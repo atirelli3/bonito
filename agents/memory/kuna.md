@@ -162,3 +162,22 @@ Verified 2026-11-25 against kuna 1.1005 (recorded subsets in `tests/fixtures/{ca
 - [WHY] On Windows `kuna docs TOPIC` prints CRLF line endings (found by the Windows CI job; Linux and macOS print LF).
   `text::multiline` reads a CRLF as a newline and still turns a lone CR into a space, or every doc line ends in a stray
   space. Only the Windows job can show this: run plain-text kuna output through `multiline`, never `str::lines` alone.
+
+## Call graph (#12)
+Verified 2026-11-25 against kuna 1.1005 on `tests/fixtures/hello.elf` and `/bin/ls` (recorded: `graph-hello.json`).
+- [WHY] `decompile-graph` is JSON always and **refuses `--json`** (exit 2, "--json is not a decompile-graph option"):
+  `Kuna::graph` builds its argv with `query_args`, which no longer appends `--json`; `query` adds it for every other call.
+- [WHY] Every function is a node and every edge is listed whatever is decompiled: hello gives 4 nodes / 4 edges and
+  `/bin/ls` 225 / 306 with `--addr`, with `--functions <nothing>` and with no filter. An unfiltered run decompiles every
+  function (a whole-program decompile), so bonito sends `--addr <the function asked> --max-fn-seconds 1`: 0.1 s on
+  `/bin/ls`, nothing on stderr. The per-node `error` of that one decompile is not read: it cannot change an edge.
+- [WHY] Shape: `{schemaVersion: 4, binary{..}, functions[{address, name, size, kind, isEntryPoint, hasIndirectCalls,
+  forwardsTo, ..}], edges[{callerAddress, calleeAddress, kind, calleeOrder}]}`. Node `kind` is `normal`, `thunk` or
+  `import` (84 thunks and 91 imports in `/bin/ls`); edge `kind` is `call`, `jump` or `data`. The address is the key: a
+  thunk and the import it forwards to share a name. Calls through a pointer are **not edges** (`hasIndirectCalls` says a
+  node makes some), so "no callers" means no *direct* ones. `forwardsTo`, `size` and the header counts are not read.
+- [WHY] `schemaVersion` is read before the body (`Header`, then `Graph`): a newer schema that also renames keys is still
+  named as a schema change and not as a parse error. Every other key bonito reads is required, so a rename fails loudly.
+- [WHY] The graph does not depend on `:set` options or on which function is shown: the worker loads it once per session
+  (`Option<Graph>`, `worker::graph::graph_lines`), every view is built from it, and a failed load is not kept, so the
+  next `gc` retries. kuna's stderr from that one load is told with the answer that loaded it, not repeated.
