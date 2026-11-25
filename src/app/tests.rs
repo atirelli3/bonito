@@ -219,7 +219,7 @@ fn motions_on_a_list_that_is_not_there_yet_are_silent() {
 #[test]
 fn the_views_of_later_issues_say_they_are_not_available_yet() {
     let mut app = app();
-    type_text(&mut app, "gr");
+    type_text(&mut app, "gc");
     assert_eq!(app.message.as_deref(), Some("not available yet"));
     assert!(app.running());
 }
@@ -665,8 +665,17 @@ fn the_code_pane_cannot_take_the_focus_while_it_shows_nothing() {
 #[test]
 fn the_other_views_are_not_available_yet() {
     let (mut app, _queue) = three();
-    type_text(&mut app, "gr");
+    type_text(&mut app, "gc");
     assert_eq!(app.message.as_deref(), Some("not available yet"));
+}
+
+#[test]
+fn gr_asks_for_the_callers_of_the_selected_function() {
+    let (mut app, queue) = three();
+    type_text(&mut app, "gr");
+    assert_eq!(queue.try_recv(), Ok(asked(View::Xrefs, ALPHA)));
+    let shown = app.shown.as_ref().map(|shown| shown.request.view);
+    assert_eq!(shown, Some(View::Xrefs));
 }
 
 #[test]

@@ -350,6 +350,32 @@ fn the_data_fixture_has_a_string_a_crypto_constant_and_a_blob() {
 }
 
 #[test]
+fn xrefs_to_a_function_list_its_callers() {
+    let reply = real_kuna().xrefs(&fixture("hello.elf"), 0x201120);
+    let reply = reply.expect("answers");
+    assert_eq!(reply.notes, None);
+    let callers: Vec<&str> = reply
+        .data
+        .xrefs
+        .iter()
+        .filter_map(|xref| xref.from_function.as_ref())
+        .map(|function| function.name.as_str())
+        .collect();
+    assert_eq!(callers, ["main", "_start"]);
+}
+
+#[test]
+fn an_xrefs_answer_for_another_address_is_refused() {
+    let document = || {
+        let text = include_str!("../../tests/fixtures/xrefs-square.json");
+        serde_json::from_str::<Xrefs>(text).expect("parses")
+    };
+    assert!(answered_for(document(), 0x201120).is_ok());
+    let error = answered_for(document(), 0x201130).expect_err("another address");
+    assert!(error.to_string().contains("0x201120"), "{error}");
+}
+
+#[test]
 fn a_file_that_is_not_a_binary_is_a_failed_call() {
     let error = real_kuna()
         .functions(&fixture("hello.c"))

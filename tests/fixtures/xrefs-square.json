@@ -1,0 +1,65 @@
+{
+  "binary": "tests/fixtures/hello.elf",
+  "target": {
+    "name": "square",
+    "address": 2101536,
+    "address_hex": "0x201120",
+    "aliases": []
+  },
+  "direction": "to",
+  "count": 2,
+  "coverage": {
+    "decoded": true,
+    "section": ".text",
+    "code_section": true,
+    "executable": true,
+    "unwalked": [],
+    "notes": []
+  },
+  "xrefs": [
+    {
+      "address": 2101574,
+      "address_hex": "0x201146",
+      "kind": "call",
+      "from_address": 2101574,
+      "from_address_hex": "0x201146",
+      "to_address": 2101536,
+      "to_address_hex": "0x201120",
+      "from_function": {
+        "name": "main",
+        "address": 2101568,
+        "address_hex": "0x201140"
+      },
+      "to_function": {
+        "name": "square",
+        "address": 2101536,
+        "address_hex": "0x201120"
+      },
+      "instruction": "CALL 0x201120"
+    },
+    {
+      "address": 2101606,
+      "address_hex": "0x201166",
+      "kind": "call",
+      "from_address": 2101606,
+      "from_address_hex": "0x201166",
+      "to_address": 2101536,
+      "to_address_hex": "0x201120",
+      "from_function": {
+        "name": "_start",
+        "address": 2101600,
+        "address_hex": "0x201160"
+      },
+      "to_function": {
+        "name": "square",
+        "address": 2101536,
+        "address_hex": "0x201120"
+      },
+      "instruction": "CALL 0x201120"
+    }
+  ],
+  "data_refs_coverage": "none",
+  "data_refs_reason": "an ELF executable (ET_EXEC) loads at its link addresses, so no relocation lists its pointers",
+  "data_refs_count": 0,
+  "data_refs": []
+}

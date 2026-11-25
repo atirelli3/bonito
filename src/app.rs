@@ -573,9 +573,9 @@ impl App {
         }
     }
 
-    /// `gd` or `ga`, or Enter in the list: `view` of the selected function, or of the one shown.
+    /// `gd`, `ga` or `gr`, or Enter in the list: `view` of the selected function, or of the one shown.
     fn open_view(&mut self, view: View) {
-        if !matches!(view, View::Decompile | View::Disassembly) {
+        if !matches!(view, View::Decompile | View::Disassembly | View::Xrefs) {
             return self.not_yet();
         }
         let target = match self.focus {

@@ -2,7 +2,7 @@
 
 use crate::app::{Msg, Request};
 use crate::keymap::View;
-use crate::kuna::{self, Decompiled, Disassembly, Kuna, Reply};
+use crate::kuna::{self, Decompiled, Disassembly, Kuna, Reply, Xrefs};
 use std::io;
 use std::iter::once;
 use std::panic::{self, AssertUnwindSafe};
@@ -19,6 +19,16 @@ const TAB: &str = "    ";
 const MAX_LINES: usize = 100_000;
 /// How many characters of a line a view keeps.
 const MAX_LINE_CHARS: usize = 4096;
+/// How many notes a reply keeps: a hostile binary can make kuna print thousands.
+const MAX_NOTES: usize = 10;
+/// The `data_refs_coverage` values that mean kuna read all of the image's relocation metadata.
+const COMPLETE_POINTERS: [&str; 5] = [
+    "none",
+    "chained-fixups",
+    "rebase-opcodes",
+    "dynamic-relocations",
+    "base-relocations",
+];
 /// How many characters of a panic message are kept.
 const PANIC_LIMIT: usize = 200;
 /// How often an idle worker checks whether kuna was cancelled.
@@ -99,12 +109,11 @@ fn lines_of(
     match view {
         View::Decompile => decompile_reply(kuna.decompile(binary, address)?),
         View::Disassembly => Ok(disassembly_reply(kuna.disassemble(binary, address)?)),
+        View::Xrefs => Ok(xrefs_reply(kuna.xrefs(binary, address)?)),
         // ponytail: #9 adds these; nothing asks for them yet.
-        View::Xrefs | View::Strings | View::CallGraph | View::Hex | View::PCode | View::Summary => {
-            Err(kuna::Error::Reported(format!(
-                "the {view:?} view is not available in bonito yet"
-            )))
-        }
+        View::Strings | View::CallGraph | View::Hex | View::PCode | View::Summary => Err(
+            kuna::Error::Reported(format!("the {view:?} view is not available in bonito yet")),
+        ),
     }
 }
 
@@ -121,11 +130,14 @@ fn bounded(mut lines: impl Iterator<Item = String>) -> (Vec<String>, bool) {
     (kept, cut)
 }
 
-/// The notes of a reply, joined for the status line; none when there are none.
+/// The notes of a reply, joined for the status line; none when there are none. Past `MAX_NOTES` they are dropped.
 fn join_notes(notes: impl IntoIterator<Item = String>, cut: bool) -> Option<String> {
-    let cut = cut.then(|| format!("cut to {MAX_LINES} lines of {MAX_LINE_CHARS} characters"));
-    let notes: Vec<String> = notes.into_iter().chain(cut).collect();
-    (!notes.is_empty()).then(|| notes.join(" · "))
+    let mut notes = notes.into_iter();
+    let mut kept: Vec<String> = notes.by_ref().take(MAX_NOTES).collect();
+    let more = notes.next().is_some();
+    kept.extend(more.then(|| format!("more than {MAX_NOTES} notes, the rest are not shown")));
+    kept.extend(cut.then(|| format!("cut to {MAX_LINES} lines of {MAX_LINE_CHARS} characters")));
+    (!kept.is_empty()).then(|| kept.join(" · "))
 }
 
 /// The C text of a function, one string per line; a function kuna gave no code for is an error.
@@ -162,6 +174,79 @@ fn disassembly_reply(reply: Reply<Disassembly>) -> Reply<Vec<String>> {
         data: lines,
         notes: join_notes(said, cut),
     }
+}
+
+/// The references to a function as `0x201146  call  main  CALL 0x201120` lines, the stored pointers after them;
+/// kuna's notes, what it did not decode and a short pointer list join the reply's notes. An answer that may be
+/// incomplete never says "no references": a missing caller is worse than none.
+fn xrefs_reply(reply: Reply<Xrefs>) -> Reply<Vec<String>> {
+    let Reply { data, notes } = reply;
+    let (mut lines, cut) = bounded(xref_rows(&data));
+    let short = short_pointers(&data);
+    let coverage = &data.coverage;
+    let walked = coverage.decoded && coverage.unwalked.is_empty();
+    if lines.is_empty() {
+        let target = data.target.name.as_ref().map_or_else(
+            || format!("{:#x}", data.target.address),
+            |name| name.as_str().to_string(),
+        );
+        lines.push(if walked && short.is_none() {
+            format!("no references to {target}")
+        } else {
+            format!("no references found to {target} (see the status line)")
+        });
+    }
+    let stderr = notes.clone().unwrap_or_default();
+    let unwalked = coverage.unwalked.len();
+    let walk = [
+        (!coverage.decoded)
+            .then(|| "the target was not decoded: no code reference can be found".to_string()),
+        (unwalked > 0)
+            .then(|| format!("{unwalked} regions were not decoded: references may be missing")),
+    ];
+    let said = notes
+        .into_iter()
+        .chain(
+            coverage
+                .notes
+                .iter()
+                .map(|note| note.as_str())
+                .filter(|note| !stderr.contains(note))
+                .map(str::to_string),
+        )
+        .chain(walk.into_iter().flatten())
+        .chain(short);
+    Reply {
+        data: lines,
+        notes: join_notes(said, cut),
+    }
+}
+
+/// The rows of an xrefs answer: the references in code, then the stored pointers.
+fn xref_rows(data: &Xrefs) -> impl Iterator<Item = String> {
+    let calls = data.xrefs.iter().map(|xref| {
+        let from = xref
+            .from_function
+            .as_ref()
+            .map_or("?", |function| function.name.as_str());
+        let (kind, instruction) = (xref.kind.as_str(), xref.instruction.as_str());
+        format!("{:#x}  {kind}  {from}  {instruction}", xref.from_address)
+    });
+    let pointers = data.data_refs.iter().map(|pointer| {
+        let from = pointer.from_name.as_ref().map_or("?", |name| name.as_str());
+        let kind = pointer.kind.as_str();
+        format!("{:#x}  {kind}  {from}", pointer.from_address)
+    });
+    calls.chain(pointers)
+}
+
+/// Says so when kuna did not read all of the stored pointers (a value it does not know counts as short).
+fn short_pointers(data: &Xrefs) -> Option<String> {
+    let coverage = data.data_refs_coverage.as_str();
+    (!COMPLETE_POINTERS.contains(&coverage)).then(|| match &data.data_refs_reason {
+        Some(reason) => format!("stored pointers {coverage}: {}", reason.as_str()),
+        None => format!("stored pointers {coverage}"),
+    })
 }
 
 #[cfg(test)]

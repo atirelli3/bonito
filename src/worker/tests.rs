@@ -144,6 +144,186 @@ fn a_view_kuna_cannot_give_yet_is_an_error_not_silence() {
     assert!(message.contains("Hex"), "{message}");
 }
 
+fn xrefs_of(text: &str) -> Reply<Vec<String>> {
+    let document: kuna::Xrefs = serde_json::from_str(text).expect("parses");
+    xrefs_reply(Reply {
+        data: document,
+        notes: None,
+    })
+}
+
+#[test]
+fn xrefs_are_one_line_per_reference_with_the_instruction() {
+    let reply = xrefs_of(include_str!("../../tests/fixtures/xrefs-square.json"));
+    assert_eq!(
+        reply.data,
+        [
+            "0x201146  call  main  CALL 0x201120",
+            "0x201166  call  _start  CALL 0x201120"
+        ]
+    );
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn a_function_nobody_references_says_so() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"orphan","address":16},"coverage":{"decoded":true,"notes":[]},
+        "data_refs_coverage":"none","xrefs":[],"data_refs":[]}"#,
+    );
+    assert_eq!(reply.data, ["no references to orphan"]);
+}
+
+#[test]
+fn stored_pointers_are_listed_and_partial_coverage_is_said() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":["not decoded"]},
+        "data_refs_coverage":"partial","data_refs_reason":"some relocations unreadable",
+        "xrefs":[{"from_address":32,"kind":"call","instruction":"CALL 0x10","from_function":null}],
+        "data_refs":[{"kind":"pointer","from_address":4096,"from_name":null}]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["0x20  call  ?  CALL 0x10", "0x1000  pointer  ?"]
+    );
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("not decoded · stored pointers partial: some relocations unreadable")
+    );
+}
+
+#[test]
+fn only_an_incomplete_pointer_list_is_said() {
+    let notes = |coverage: &str| {
+        let text = format!(
+            r#"{{"target":{{"name":"f","address":16}},"coverage":{{"decoded":true,"notes":[]}},
+            "data_refs_coverage":"{coverage}","data_refs_reason":"why","xrefs":[],"data_refs":[]}}"#
+        );
+        xrefs_of(&text).notes
+    };
+    assert_eq!(
+        notes("unsupported").as_deref(),
+        Some("stored pointers unsupported: why")
+    );
+    assert_eq!(notes("none"), None);
+    assert_eq!(notes("dynamic-relocations"), None);
+    assert_eq!(
+        notes("novel").as_deref(),
+        Some("stored pointers novel: why")
+    );
+}
+
+/// The reply for a target with `coverage` (the JSON of the `coverage` object) and no references.
+fn empty_xrefs(target: &str, coverage: &str) -> Reply<Vec<String>> {
+    xrefs_of(&format!(
+        r#"{{"target":{target},"coverage":{coverage},"data_refs_coverage":"none","xrefs":[],"data_refs":[]}}"#
+    ))
+}
+
+#[test]
+fn a_target_kuna_did_not_decode_is_not_reported_as_unreferenced() {
+    let reply = empty_xrefs(
+        r#"{"name":null,"address":0}"#,
+        r#"{"decoded":false,"notes":[]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["no references found to 0x0 (see the status line)"]
+    );
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("the target was not decoded: no code reference can be found")
+    );
+}
+
+#[test]
+fn code_kuna_did_not_walk_is_said_because_callers_may_be_missing() {
+    let reply = empty_xrefs(
+        r#"{"name":"f","address":16}"#,
+        r#"{"decoded":true,"unwalked":[{"a":1},"b"],"notes":[]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["no references found to f (see the status line)"]
+    );
+    assert_eq!(
+        reply.notes.as_deref(),
+        Some("2 regions were not decoded: references may be missing")
+    );
+}
+
+#[test]
+fn an_empty_answer_with_a_short_pointer_list_is_not_reported_as_unreferenced() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":[]},
+        "data_refs_coverage":"partial","xrefs":[],"data_refs":[]}"#,
+    );
+    assert_eq!(
+        reply.data,
+        ["no references found to f (see the status line)"]
+    );
+}
+
+#[test]
+fn a_nameless_target_is_named_by_its_address() {
+    let reply = empty_xrefs(
+        r#"{"name":null,"address":16}"#,
+        r#"{"decoded":true,"notes":[]}"#,
+    );
+    assert_eq!(reply.data, ["no references to 0x10"]);
+    assert_eq!(reply.notes, None);
+}
+
+#[test]
+fn a_short_pointer_list_without_a_reason_is_still_said() {
+    let reply = xrefs_of(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":[]},
+        "data_refs_coverage":"partial","xrefs":[],"data_refs":[]}"#,
+    );
+    assert_eq!(reply.notes.as_deref(), Some("stored pointers partial"));
+}
+
+#[test]
+fn a_coverage_note_kuna_also_printed_on_stderr_is_said_once() {
+    let document: kuna::Xrefs = serde_json::from_str(
+        r#"{"target":{"name":"f","address":16},"coverage":{"decoded":true,"notes":["no walk"]},
+        "data_refs_coverage":"none","xrefs":[],"data_refs":[]}"#,
+    )
+    .expect("parses");
+    let reply = xrefs_reply(Reply {
+        data: document,
+        notes: Some("no walk".to_string()),
+    });
+    assert_eq!(reply.notes.as_deref(), Some("no walk"));
+}
+
+#[test]
+fn a_flood_of_notes_is_capped() {
+    let joined = join_notes((0..1000).map(|n| format!("note {n}")), false).expect("notes");
+    assert!(
+        joined.contains("note 9") && !joined.contains("note 10 "),
+        "{joined}"
+    );
+    assert!(joined.contains("more than 10 notes"), "{joined}");
+    assert!(joined.len() < 500, "{} bytes", joined.len());
+}
+
+#[test]
+fn the_worker_lists_the_callers_of_a_function_on_request() {
+    let (tx, rx) = mpsc::channel();
+    let (requests, queue) = mpsc::channel();
+    let worker = spawn(Arc::new(pinned_kuna()), hello(), queue, tx).expect("spawns");
+    assert!(matches!(rx.recv(), Ok(Msg::Functions(Ok(_)))));
+    requests
+        .send(request(View::Xrefs, 0x201120))
+        .expect("sends");
+    let lines = next_lines(&rx, View::Xrefs, 0x201120);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].ends_with("main  CALL 0x201120"), "{lines:?}");
+    drop(requests);
+    worker.join().expect("ends when nobody can ask any more");
+}
+
 #[test]
 fn a_worker_whose_kuna_was_cancelled_reports_it_for_every_request() {
     let kuna = Arc::new(pinned_kuna());

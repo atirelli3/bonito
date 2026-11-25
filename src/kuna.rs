@@ -18,7 +18,7 @@ mod text;
 
 use scratch::Scratch;
 
-pub use json::{Decompiled, Disassembly, Function};
+pub use json::{Decompiled, Disassembly, Function, Xrefs};
 pub use text::{is_unsafe, single_line};
 
 /// The kuna binary's file name on this platform.
@@ -304,6 +304,13 @@ impl Kuna {
         )
     }
 
+    /// The references to the function at `address`: its callers, and the stored pointers that hold its address.
+    pub fn xrefs(&self, binary: &Path, address: u64) -> Result<Reply<Xrefs>, Error> {
+        let target = hex(address);
+        self.query("xrefs", binary, &["--to", target.as_str()])?
+            .try_map(|document| answered_for(document, address))
+    }
+
     /// Runs `kuna <subcommand> <binary> <extra..> --json` and parses the document.
     fn query<T: DeserializeOwned>(
         &self,
@@ -402,6 +409,18 @@ fn query_args(subcommand: &str, binary: &Path, extra: &[&str]) -> Result<Vec<OsS
 /// An address the way kuna reads it: `0x201140`.
 fn hex(address: u64) -> String {
     format!("{address:#x}")
+}
+
+/// `document` if it is about `address`. `xrefs` has no `--addr`, and kuna reads a name before an address, so a
+/// symbol in the binary named like the address could make it answer for another one.
+fn answered_for(document: Xrefs, address: u64) -> Result<Xrefs, Error> {
+    if document.target.address == address {
+        return Ok(document);
+    }
+    Err(Error::Reported(format!(
+        "kuna answered for {:#x}, not {address:#x}",
+        document.target.address
+    )))
 }
 
 /// The one function of a `decompile` document, or the problem kuna reported for the document or the function.

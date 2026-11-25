@@ -5,6 +5,7 @@
 
 use super::text::{Code, Text};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 /// One function kuna found in the binary.
 #[derive(Debug, Deserialize)]
@@ -75,7 +76,62 @@ pub struct Disassembly {
     pub instructions: Vec<Instruction>,
 }
 
-/// The address a disassembly started from.
+/// What `kuna xrefs --json` prints.
+#[derive(Debug, Deserialize)]
+pub struct Xrefs {
+    /// What was asked for.
+    pub target: Target,
+    pub coverage: Coverage,
+    /// The references in code: calls, jumps, reads and writes.
+    pub xrefs: Vec<Xref>,
+    /// How much of the image's relocation metadata kuna read: `partial` and `unsupported` mean `data_refs` is short.
+    pub data_refs_coverage: Text,
+    pub data_refs_reason: Option<Text>,
+    /// Words the image stores that hold the target's address.
+    pub data_refs: Vec<DataRef>,
+}
+
+/// What kuna decoded for an xrefs query.
+#[derive(Debug, Deserialize)]
+pub struct Coverage {
+    /// Whether kuna decoded the target: not so for data and unmapped addresses, which no code reference names.
+    pub decoded: bool,
+    /// Code the walk did not decode, so references may be missing; only how many matters.
+    #[serde(default)]
+    pub unwalked: Vec<IgnoredAny>,
+    /// What kuna wants the user to know about the walk.
+    pub notes: Vec<Text>,
+}
+
+/// One reference in code.
+#[derive(Debug, Deserialize)]
+pub struct Xref {
+    /// Where the referencing instruction is.
+    pub from_address: u64,
+    /// `call`, `jump`, `data`, `read`, `write` or `pointer`.
+    pub kind: Text,
+    /// The function the instruction is in, if it is in one.
+    pub from_function: Option<Located>,
+    pub instruction: Text,
+}
+
+/// A function by name and entry address.
+#[derive(Debug, Deserialize)]
+pub struct Located {
+    pub name: Text,
+    pub address: u64,
+}
+
+/// A word the image stores that holds an address.
+#[derive(Debug, Deserialize)]
+pub struct DataRef {
+    pub kind: Text,
+    /// Where the word is.
+    pub from_address: u64,
+    pub from_name: Option<Text>,
+}
+
+/// The address a disassembly or an xrefs query started from.
 #[derive(Debug, Deserialize)]
 pub struct Target {
     /// The function's name, when a function starts there.
@@ -209,5 +265,47 @@ mod tests {
     fn a_hexdump_is_not_a_disassembly() {
         let text = r#"{"kind":"data","truncated":false,"notes":[],"rows":[]}"#;
         assert!(serde_json::from_str::<Disassembly>(text).is_err());
+    }
+
+    const XREFS: &str = include_str!("../../tests/fixtures/xrefs-square.json");
+
+    #[test]
+    fn parses_the_real_xrefs_output() {
+        let document: Xrefs = serde_json::from_str(XREFS).expect("parses");
+        assert_eq!(document.target.name.as_deref(), Some("square"));
+        assert_eq!(document.xrefs.len(), 2);
+        let first = &document.xrefs[0];
+        assert_eq!(first.from_address, 0x201146);
+        assert_eq!(
+            (first.kind.as_str(), first.instruction.as_str()),
+            ("call", "CALL 0x201120")
+        );
+        let from = first.from_function.as_ref().expect("inside a function");
+        assert_eq!((from.name.as_str(), from.address), ("main", 0x201140));
+        assert!(document.data_refs.is_empty() && document.coverage.notes.is_empty());
+        assert_eq!(document.data_refs_coverage.as_str(), "none");
+    }
+
+    #[test]
+    fn an_xrefs_document_without_its_references_is_rejected() {
+        let text = r#"{"target":{"name":"t","address":1},"coverage":{"decoded":true,"notes":[]},"data_refs":[],"data_refs_coverage":"none"}"#;
+        assert!(serde_json::from_str::<Xrefs>(text).is_err());
+    }
+
+    #[test]
+    fn coverage_without_decoded_is_rejected() {
+        let text = r#"{"target":{"name":"t","address":1},"coverage":{"notes":[]},"data_refs_coverage":"none","xrefs":[],"data_refs":[]}"#;
+        assert!(serde_json::from_str::<Xrefs>(text).is_err());
+    }
+
+    #[test]
+    fn text_in_xrefs_is_cleaned_while_parsing() {
+        let text = r#"{"target":{"name":null,"address":1},"coverage":{"decoded":true,"notes":[]},"data_refs_coverage":"none",
+            "xrefs":[{"from_address":2,"kind":"call","instruction":"CALL\u001b[2J","from_function":null}],
+            "data_refs":[{"kind":"pointer","from_address":3,"from_name":"evil\u001b[2J"}]}"#;
+        let document: Xrefs = serde_json::from_str(text).expect("parses");
+        assert_eq!(document.xrefs[0].instruction.as_str(), "CALL [2J");
+        assert!(document.xrefs[0].from_function.is_none());
+        assert_eq!(document.data_refs[0].from_name.as_deref(), Some("evil [2J"));
     }
 }
