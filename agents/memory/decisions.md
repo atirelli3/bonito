@@ -27,6 +27,14 @@ fact the code doesn't say.
 - [WHY] `scripts/task.sh` costs ~6 GraphQL calls and `gh issue create --parent` more: a burst of them trips GitHub's
   secondary rate limit ("API rate limit already exceeded") even while `gh api rate_limit` shows budget. Pace calls
   ≥10 s apart, never retry in a tight loop, and wait a few minutes once refused.
+- [WHY] When GitHub's GraphQL is degraded (githubstatus.com, "Something went wrong while executing your query") `gh pr
+  create`, `gh pr merge` and `scripts/task.sh` fail while REST works: open the PR with `gh api -X POST
+  repos/<repo>/pulls`, merge with `-X PUT …/pulls/N/merge -f merge_method=squash`, delete the branch with `-X DELETE
+  …/git/refs/heads/<branch>`; closing keywords still close the issues and the board catches up on its own.
+- [WHY] Review agents are told read-only and to give kuna absolute `-o` paths: a relative one made a folder in the repo
+  root. Check `git status` after a review round, and before `git add`.
+- [WHY] The edit tools turn a `\u202e` escape in sent text into the raw character, which rustc refuses in a literal: in
+  Rust source write `\u{202e}`; in a JSON string that a test parses, write it through a script with doubled backslashes.
 
 ## Product scope (v1)
 - [USER-YES] (2026-11-24) Goal: a Rust TUI with every user-facing kuna feature, interactive, vim motions throughout
