@@ -217,10 +217,13 @@ fn motions_on_a_list_that_is_not_there_yet_are_silent() {
 }
 
 #[test]
-fn the_views_of_later_issues_say_they_are_not_available_yet() {
+fn the_call_graph_with_no_function_to_show_says_why() {
     let mut app = app();
     type_text(&mut app, "gc");
-    assert_eq!(app.message.as_deref(), Some("not available yet"));
+    assert_eq!(
+        app.message.as_deref(),
+        Some("the functions are still loading")
+    );
     assert!(app.running());
 }
 
@@ -665,10 +668,80 @@ fn the_code_pane_cannot_take_the_focus_while_it_shows_nothing() {
 }
 
 #[test]
-fn the_other_views_are_not_available_yet() {
-    let (mut app, _queue) = three();
+fn gc_asks_for_the_call_graph_of_the_selected_function() {
+    let (mut app, queue) = three();
+    type_text(&mut app, "jgc");
+    assert_eq!(queue.try_recv(), Ok(asked(View::CallGraph, BETA)));
+    let shown = app.shown.as_ref().map(|shown| shown.request.view);
+    assert_eq!(shown, Some(View::CallGraph));
+    assert_eq!(
+        app.loading().as_deref(),
+        Some("loading the call graph of beta…")
+    );
+}
+
+#[test]
+fn enter_on_a_graph_row_follows_its_address_not_the_punctuated_name() {
+    let (mut app, queue) = three();
     type_text(&mut app, "gc");
-    assert_eq!(app.message.as_deref(), Some("not available yet"));
+    queue.try_recv().expect("asked");
+    let lines = [
+        "alpha  0x10",
+        "callers: none direct",
+        "callees",
+        "  be@ta  0x20",
+    ];
+    app.update(code(View::CallGraph, ALPHA, &lines, None))
+        .expect("updates");
+    type_text(&mut app, "jjj");
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::CallGraph, BETA)));
+}
+
+#[test]
+fn enter_on_a_graph_row_without_an_address_says_so() {
+    let (mut app, queue) = three();
+    type_text(&mut app, "gc");
+    queue.try_recv().expect("asked");
+    let lines = [
+        "alpha  0x10",
+        "callers: none direct",
+        "callees",
+        "  beta  0x20",
+    ];
+    app.update(code(View::CallGraph, ALPHA, &lines, None))
+        .expect("updates");
+    type_text(&mut app, "j");
+    enter(&mut app);
+    assert_eq!(app.message.as_deref(), Some("no function on this line"));
+    assert!(queue.try_recv().is_err());
+}
+
+#[test]
+fn gc_from_the_decompile_view_shows_the_graph_of_the_function_shown() {
+    let (mut app, queue) = three();
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::Decompile, ALPHA)));
+    type_text(&mut app, "gc");
+    assert_eq!(queue.try_recv(), Ok(asked(View::CallGraph, ALPHA)));
+}
+
+#[test]
+fn enter_on_a_callee_in_the_call_graph_opens_the_graph_of_that_callee() {
+    let (mut app, queue) = three();
+    type_text(&mut app, "gc");
+    queue.try_recv().expect("asked");
+    let lines = [
+        "alpha  0x10",
+        "callers: none direct",
+        "callees",
+        "  beta  0x20",
+    ];
+    app.update(code(View::CallGraph, ALPHA, &lines, None))
+        .expect("updates");
+    type_text(&mut app, "jjjw");
+    enter(&mut app);
+    assert_eq!(queue.try_recv(), Ok(asked(View::CallGraph, BETA)));
 }
 
 #[test]
